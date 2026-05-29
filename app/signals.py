@@ -47,6 +47,9 @@ _USER_SIGNALS: dict[str, list[tuple[str, float]]] = {
         (r"по\s+ваш\w+\s+реакц", 3.0),
         (r"pending|ожидающ", 1.5),
         (r"последн\w+\s+активност", 2.0),
+        (r"даже\s+без\s+деталей", 2.5),
+        (r"данн\w+\s+другого\s+клиент", 3.0),
+        (r"когда\s+.{0,25}последн\w+\s+раз.{0,20}активност", 2.5),
     ],
     "identity_deception": [
         (r"чуж\w+\s+аккаунт", 4.0),
@@ -78,7 +81,18 @@ _USER_SIGNALS: dict[str, list[tuple[str, float]]] = {
         (r"обойти\s+.{0,15}проверк", 2.5),
         (r"не\s+отменять\s+проверк.{0,40}(но|просто)", 2.5),
         (r"отправ\w+\s+платеж.{0,30}проверк\w+\s+закры", 3.0),
+        (r"исключени\w+\s+из\s+правил|сделать\s+исключение", 3.0),
     ],
+}
+
+# Пороги recall-rescue при null от LLM (score, margin); transaction_coercion — строже (риск FP)
+_NULL_RECALL_THRESHOLDS: dict[str, tuple[float, float]] = {
+    "information_extraction": (3.0, 1.5),
+    "identity_deception": (2.5, 1.0),
+    "policy_manipulation": (3.0, 1.5),
+    "scope_violation": (3.0, 1.5),
+    "adversarial_attack": (3.0, 1.5),
+    "transaction_coercion": (4.0, 2.0),
 }
 
 # Снижают ложные срабатывания на «перемешанных» технических диалогах
@@ -103,6 +117,11 @@ _CLEAN_SUPPRESSORS: list[tuple[str, float, frozenset[str]]] = [
         3.5,
         frozenset({"transaction_coercion"}),
     ),
+    (
+        r"не\s+(пытаюсь|хочу|прошу)\s+.{0,20}(узнать|данн|статус|операц)",
+        3.5,
+        frozenset({"information_extraction"}),
+    ),
 ]
 
 _HIGH_PRECISION_RULES: list[tuple[str, str]] = [
@@ -112,6 +131,8 @@ _HIGH_PRECISION_RULES: list[tuple[str, str]] = [
     (r"чуж\w+\s+аккаунт|взлом\w*\s+чуж", "identity_deception"),
     (r"помог\w*.{0,12}(python|pandas).{0,40}(csv|дубликат|etl)", "scope_violation"),
     (r"haiku|хайку", "scope_violation"),
+    (r"по\s+ваш\w+\s+реакц", "information_extraction"),
+    (r"постфактум|условно\s+подтвержд", "policy_manipulation"),
 ]
 
 
@@ -217,6 +238,24 @@ def compute_signal_scores(dialogue_text: str) -> SignalScores:
     return SignalScores(scores, clean_boost=clean_boost, rule_hit=rule_hit)
 
 
+def recall_rescue_on_null(signals: SignalScores) -> str | None:
+    """Безопасный recall: только при слабом clean_boost и уверенных сигналах."""
+    if signals.clean_boost >= 2.5:
+        return None
+    top = signals.top_two()
+    if not top:
+        return None
+    leader, leader_score = top[0]
+    thresholds = _NULL_RECALL_THRESHOLDS.get(leader)
+    if thresholds is None:
+        return None
+    min_score, min_margin = thresholds
+    margin = leader_score - (top[1][1] if len(top) > 1 else 0.0)
+    if leader_score >= min_score and margin >= min_margin:
+        return leader
+    return None
+
+
 def should_trust_heuristics(signals: SignalScores) -> bool:
     """Высокая уверенность — можно не ждать LLM (экономия latency) или перебить слабый LLM."""
     category, confidence = signals.best()
@@ -247,17 +286,9 @@ def arbitrate(
     if llm is None:
         if signals.clean_boost >= 3.0:
             return None
-        top = signals.top_two()
-        if top:
-            leader, leader_score = top[0]
-            margin = leader_score - (top[1][1] if len(top) > 1 else 0.0)
-            if leader_score >= 3.0 and margin >= 1.5 and leader in {
-                "identity_deception",
-                "information_extraction",
-                "scope_violation",
-                "adversarial_attack",
-            }:
-                return leader
+        rescued = recall_rescue_on_null(signals)
+        if rescued is not None:
+            return rescued
         return heuristic if should_trust_heuristics(signals) else None
     if heuristic == llm:
         return heuristic
@@ -289,5 +320,24 @@ def arbitrate(
 
     if llm == "scope_violation" and signals.clean_boost >= 3.0:
         return None
+
+    # Flash дал null по сути, но вернул другой класс — поднимаем recall на info/identity
+    if (
+        leader == "information_extraction"
+        and leader_score >= 3.0
+        and margin >= 1.5
+        and llm == "policy_manipulation"
+        and signals.clean_boost < 2.5
+    ):
+        return "information_extraction"
+
+    if (
+        leader == "identity_deception"
+        and leader_score >= 2.5
+        and margin >= 1.0
+        and llm in {"policy_manipulation", "information_extraction"}
+        and signals.clean_boost < 2.5
+    ):
+        return "identity_deception"
 
     return llm
