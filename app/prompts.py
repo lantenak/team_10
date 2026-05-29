@@ -430,3 +430,39 @@ def build_classification_prompt(dialogue_text: str, *, max_dialogue_chars: int =
 
 Ответь ТОЛЬКО JSON:
 {{"category": "<одна из 6 категорий>" | null, "reason": "<кратко 1 предложение>"}}"""
+
+
+def build_validation_prompt(
+    dialogue_text: str,
+    primary_label: str | None,
+    *,
+    max_dialogue_chars: int = 6000,
+) -> str:
+    """Второй проход: Opus проверяет ответ быстрой модели."""
+    if len(dialogue_text) > max_dialogue_chars:
+        dialogue_text = dialogue_text[:max_dialogue_chars] + "\n...[обрезано]"
+
+    primary_display = primary_label if primary_label else "clean (null)"
+
+    return f"""Ты старший валидатор red flags в банковской поддержке.
+
+Быстрый классификатор уже выдал метку: **{primary_display}**
+
+Твоя задача — подтвердить или исправить по намерению пользователя (только реплики user:).
+Если нарушения нет — category = null.
+
+{CATEGORY_GUIDE}
+
+{DISAMBIGUATION_RULES}
+
+Правила валидации:
+• Если первичная метка clean, но user косвенно вытягивает данные другого клиента → information_extraction.
+• Если clean, но давление на процедуры / VIP / постфактум → policy_manipulation.
+• Если red flag, но это багрепорт своего приложения / ретроспектива без давления на перевод → clean.
+• При сомнении между двумя red flags — выбери более специфичный по намерению.
+
+Диалог:
+{dialogue_text}
+
+Ответь ТОЛЬКО JSON:
+{{"category": "<одна из 6 категорий>" | null, "verdict": "confirm" | "correct", "reason": "<одно предложение>"}}"""

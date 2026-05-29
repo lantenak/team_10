@@ -9,11 +9,14 @@ import typing
 
 import httpx
 
-from app.prompts import build_classification_prompt
-from app.signals import arbitrate, compute_signal_scores, should_trust_heuristics
+from app.prompts import build_classification_prompt, build_validation_prompt
+from app.signals import SignalScores, arbitrate, compute_signal_scores, should_trust_heuristics
 
 OPENROUTER_MODEL = os.getenv("OPENROUTER_MODEL", "google/gemini-2.5-flash")
+OPENROUTER_VALIDATOR_MODEL = os.getenv("OPENROUTER_VALIDATOR_MODEL", "anthropic/claude-opus-4.8")
 LLM_TIMEOUT_SEC = float(os.getenv("LLM_TIMEOUT_SEC", "4.5"))
+VALIDATOR_TIMEOUT_SEC = float(os.getenv("VALIDATOR_TIMEOUT_SEC", "6.0"))
+VALIDATOR_ENABLED = os.getenv("VALIDATOR_ENABLED", "1").lower() not in {"0", "false", "no"}
 
 RED_FLAG_CATEGORIES: frozenset[str] = frozenset(
     {
@@ -34,13 +37,21 @@ class LLMClient:
     def __init__(self) -> None:
         self.api_key = os.getenv("OPENROUTER_API_KEY", "")
         self.model = OPENROUTER_MODEL
+        self.validator_model = OPENROUTER_VALIDATOR_MODEL
 
-    def request_completion(self, prompt_text: str, *, json_mode: bool = True) -> str | None:
+    def request_completion(
+        self,
+        prompt_text: str,
+        *,
+        model: str | None = None,
+        json_mode: bool = True,
+        timeout_sec: float | None = None,
+    ) -> str | None:
         if not self.api_key:
             return None
 
         request_payload: dict[str, typing.Any] = {
-            "model": self.model,
+            "model": model or self.model,
             "messages": [{"role": "user", "content": prompt_text}],
             "temperature": 0,
         }
@@ -55,7 +66,7 @@ class LLMClient:
                     "Content-Type": "application/json",
                 },
                 json=request_payload,
-                timeout=LLM_TIMEOUT_SEC,
+                timeout=timeout_sec or LLM_TIMEOUT_SEC,
             )
             response.raise_for_status()
             return str(response.json()["choices"][0]["message"]["content"])
@@ -96,25 +107,105 @@ def _parse_category(raw_response: str | None) -> str | None:
     return None
 
 
-def _classify_with_llm(llm_client: LLMClient, messages: str) -> str | None:
+def _classify_with_llm(
+    llm_client: LLMClient,
+    messages: str,
+    *,
+    model: str | None = None,
+    timeout_sec: float | None = None,
+) -> str | None:
     prompt = build_classification_prompt(messages)
-    raw = llm_client.request_completion(prompt, json_mode=True)
+    raw = llm_client.request_completion(
+        prompt,
+        json_mode=True,
+        model=model,
+        timeout_sec=timeout_sec,
+    )
     return _parse_category(raw)
+
+
+def _validate_with_opus(
+    llm_client: LLMClient,
+    messages: str,
+    primary_label: str | None,
+) -> str | None:
+    prompt = build_validation_prompt(messages, primary_label)
+    raw = llm_client.request_completion(
+        prompt,
+        model=llm_client.validator_model,
+        json_mode=True,
+        timeout_sec=VALIDATOR_TIMEOUT_SEC,
+    )
+    return _parse_category(raw)
+
+
+def needs_opus_validation(
+    primary: str | None,
+    heuristic: str | None,
+    signals: SignalScores,
+) -> bool:
+    """Когда второй проход Opus даёт максимум пользы при приемлемой latency."""
+    if not VALIDATOR_ENABLED:
+        return False
+    if signals.rule_hit:
+        return False
+
+    top = signals.top_two()
+    leader_score = top[0][1] if top else 0.0
+    margin = leader_score - (top[1][1] if top and len(top) > 1 else 0.0)
+
+    # Сильное согласие эвристик и Flash — Opus не нужен
+    if primary is not None and primary == heuristic and leader_score >= 4.0 and margin >= 2.0:
+        if signals.clean_boost < 2.0:
+            return False
+
+    # Явный clean-контекст и Flash clean без сигналов — экономим latency
+    if primary is None and signals.clean_boost >= 3.5 and leader_score < 2.0:
+        return False
+
+    # Flash clean, но эвристики видят риск — валидируем (recall)
+    if primary is None and (heuristic is not None or leader_score >= 2.0):
+        return True
+
+    # Flash red flag при clean suppressors — валидируем (precision)
+    if primary is not None and signals.clean_boost >= 3.0:
+        return True
+
+    # Расхождение Flash и эвристик
+    if primary is not None and heuristic is not None and primary != heuristic:
+        return True
+
+    # Любой red flag от Flash — проверка Opus (основной прирост precision/recall на OOD)
+    if primary is not None:
+        return True
+
+    return False
 
 
 def process_risk_detection(
     llm_client: LLMClient,
     messages: str,
 ) -> dict[str, typing.Any] | None:
-    """Гибрид: эвристики по намерению + LLM + арбитраж. None = clean."""
+    """Гибрид: эвристики → Flash → Opus-валидация (при необходимости) → арбитраж."""
     signals = compute_signal_scores(messages)
+
+    if signals.rule_hit:
+        return {"category": signals.rule_hit}
+
     heuristic_best, _ = signals.best()
 
     if should_trust_heuristics(signals) and heuristic_best:
         return {"category": heuristic_best}
 
-    llm_category = _classify_with_llm(llm_client, messages)
-    final = arbitrate(heuristic_best, llm_category, signals)
+    primary_label = _classify_with_llm(llm_client, messages)
+
+    llm_label = primary_label
+    if needs_opus_validation(primary_label, heuristic_best, signals):
+        validated = _validate_with_opus(llm_client, messages, primary_label)
+        # Opus ответил — используем его; при сбое API — ответ Flash
+        llm_label = validated if validated is not None else primary_label
+
+    final = arbitrate(heuristic_best, llm_label, signals)
 
     if final is None:
         return None
