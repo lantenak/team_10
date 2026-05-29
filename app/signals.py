@@ -106,10 +106,21 @@ _HIGH_PRECISION_RULES: list[tuple[str, str]] = [
     # (regex on full dialogue, category) — почти без FP
     (r"disable[_\s]?security|internal[_\s]?debug", "adversarial_attack"),
     (r'"action"\s*:\s*"disable', "adversarial_attack"),
+    (r"trusted\s+mode|режим\w*\s+без\s+(дополнительных\s+)?проверок", "adversarial_attack"),
+    (r"fraud\s+score|антифрод.{0,25}логик", "adversarial_attack"),
     (r"чуж\w+\s+аккаунт|взлом\w*\s+чуж", "identity_deception"),
+    (r"пройти\s+проверк\w+.{0,25}вместо", "identity_deception"),
+    (r"по\s+ваш\w+\s+реакц", "information_extraction"),
+    (r"отправ\w+\s+плат[её]ж.{0,35}проверк\w+\s+закры", "policy_manipulation"),
+    (r"постфактум|условно\s+подтвержд", "policy_manipulation"),
     (r"помог\w*.{0,12}(python|pandas).{0,40}(csv|дубликат|etl)", "scope_violation"),
     (r"haiku|хайку", "scope_violation"),
 ]
+
+STRONG_SIGNAL_THRESHOLD = 3.5
+WEAK_SIGNAL_THRESHOLD = 2.5
+RESCUE_SIGNAL_MAX = 4.5
+STRONG_CLEAN_BOOST = 3.5
 
 
 @typing.final
@@ -145,6 +156,13 @@ class SignalScores:
 
     def top_two(self) -> list[tuple[str, float]]:
         return sorted(self.scores.items(), key=lambda item: item[1], reverse=True)[:2]
+
+    def max_score(self) -> float:
+        if self.rule_hit:
+            return 100.0
+        if not self.scores:
+            return 0.0
+        return max(self.scores.values())
 
 
 def extract_user_text(dialogue_text: str) -> str:
@@ -183,6 +201,43 @@ def compute_signal_scores(dialogue_text: str) -> SignalScores:
     return SignalScores(scores, clean_boost=clean_boost, rule_hit=rule_hit)
 
 
+def is_strong_clean_context(signals: SignalScores) -> bool:
+    """Явный clean-контекст: retrospective fraud, багрепорт, read-only без давления."""
+    return signals.clean_boost >= STRONG_CLEAN_BOOST
+
+
+def format_signal_hints(signals: SignalScores) -> str:
+    """Подсказки intent для LLM (не финальное решение)."""
+    top = signals.top_two()
+    if not top or top[0][1] < WEAK_SIGNAL_THRESHOLD:
+        return ""
+
+    lines = ["Слабые автоматические сигналы intent (не финальный ответ):"]
+    for category, score in top[:2]:
+        if score >= WEAK_SIGNAL_THRESHOLD:
+            lines.append(f"- {category}: {score:.1f}")
+    if signals.clean_boost >= 2.0:
+        lines.append(f"- clean_context: {signals.clean_boost:.1f}")
+    return "\n".join(lines)
+
+
+def needs_recall_rescue(signals: SignalScores) -> bool:
+    """Серая зона: LLM сказал clean, но эвристики видят intent."""
+    if signals.rule_hit or is_strong_clean_context(signals):
+        return False
+
+    top = signals.top_two()
+    if not top:
+        return False
+
+    leader_score = top[0][1]
+    margin = leader_score - (top[1][1] if len(top) > 1 else 0.0)
+    return (
+        WEAK_SIGNAL_THRESHOLD <= leader_score <= RESCUE_SIGNAL_MAX
+        and margin >= 1.0
+    )
+
+
 def should_trust_heuristics(signals: SignalScores) -> bool:
     """Высокая уверенность — можно не ждать LLM (экономия latency) или перебить слабый LLM."""
     category, confidence = signals.best()
@@ -211,8 +266,14 @@ def arbitrate(
     if heuristic is None:
         return llm
     if llm is None:
-        if signals.clean_boost >= 3.0:
+        if is_strong_clean_context(signals):
             return None
+        top = signals.top_two()
+        if top:
+            leader, leader_score = top[0]
+            margin = leader_score - (top[1][1] if len(top) > 1 else 0.0)
+            if leader_score >= STRONG_SIGNAL_THRESHOLD and margin >= 1.5:
+                return leader
         return heuristic if should_trust_heuristics(signals) else None
     if heuristic == llm:
         return heuristic
@@ -233,7 +294,7 @@ def arbitrate(
         return leader
 
     # LLM часто путает retrospective fraud с transaction_coercion
-    if llm == "transaction_coercion" and signals.clean_boost >= 3.0:
+    if llm == "transaction_coercion" and is_strong_clean_context(signals):
         return None
 
     if llm == "policy_manipulation" and leader == "identity_deception" and leader_score >= 3.0:
@@ -242,7 +303,13 @@ def arbitrate(
     if llm == "policy_manipulation" and leader == "adversarial_attack" and leader_score >= 3.0:
         return "adversarial_attack"
 
-    if llm == "scope_violation" and signals.clean_boost >= 3.0:
+    if llm == "information_extraction" and leader == "identity_deception" and leader_score >= 3.5:
+        return "identity_deception"
+
+    if llm == "transaction_coercion" and leader == "policy_manipulation" and leader_score >= 3.0:
+        return "policy_manipulation"
+
+    if llm == "scope_violation" and signals.clean_boost >= 3.0 and leader_score < STRONG_SIGNAL_THRESHOLD:
         return None
 
     return llm

@@ -9,11 +9,22 @@ import typing
 
 import httpx
 
-from app.prompts import build_classification_prompt
-from app.signals import arbitrate, compute_signal_scores
+from app.prompts import (
+    build_classification_prompt,
+    build_compact_classification_prompt,
+    build_rescue_classification_prompt,
+)
+from app.signals import (
+    SignalScores,
+    arbitrate,
+    compute_signal_scores,
+    format_signal_hints,
+    is_strong_clean_context,
+    needs_recall_rescue,
+)
 
 OPENROUTER_MODEL = os.getenv("OPENROUTER_MODEL", "google/gemini-2.5-flash")
-# Лидерборд: avg ≤ 5000 ms. Flash + 4.5s timeout; эвристики только в arbitrate, не без LLM.
+# Лидерборд: avg ≤ 5000 ms. Flash + 4.5s timeout; rescue только в серой зоне.
 LLM_TIMEOUT_SEC = float(os.getenv("LLM_TIMEOUT_SEC", "4.5"))
 LLM_MAX_TOKENS = int(os.getenv("LLM_MAX_TOKENS", "120"))
 
@@ -99,22 +110,75 @@ def _parse_category(raw_response: str | None) -> str | None:
     return None
 
 
-def _classify_with_llm(llm_client: LLMClient, messages: str) -> str | None:
-    prompt = build_classification_prompt(messages)
-    raw = llm_client.request_completion(prompt, json_mode=True)
-    return _parse_category(raw)
+def _request_category(llm_client: LLMClient, prompt_text: str) -> tuple[str | None, bool]:
+    """(category, api_ok). api_ok=False при timeout/ошибке API."""
+    raw = llm_client.request_completion(prompt_text, json_mode=True)
+    if raw is None:
+        return None, False
+    return _parse_category(raw), True
+
+
+def _classify_with_llm(
+    llm_client: LLMClient,
+    messages: str,
+    *,
+    signal_hints: str = "",
+) -> tuple[str | None, bool]:
+    prompt = build_classification_prompt(messages, signal_hints=signal_hints)
+    return _request_category(llm_client, prompt)
+
+
+def _classify_compact(
+    llm_client: LLMClient,
+    messages: str,
+    *,
+    signal_hints: str = "",
+) -> str | None:
+    prompt = build_compact_classification_prompt(messages, signal_hints=signal_hints)
+    category, _ = _request_category(llm_client, prompt)
+    return category
+
+
+def _classify_rescue(
+    llm_client: LLMClient,
+    messages: str,
+    signals: SignalScores,
+    *,
+    signal_hints: str = "",
+) -> str | None:
+    top = signals.top_two()
+    if not top:
+        return None
+    suspected = top[0][0]
+    prompt = build_rescue_classification_prompt(
+        messages,
+        suspected_category=suspected,
+        signal_hints=signal_hints,
+    )
+    category, _ = _request_category(llm_client, prompt)
+    return category
 
 
 def process_risk_detection(
     llm_client: LLMClient,
     messages: str,
 ) -> dict[str, typing.Any] | None:
-    """Гибрид: LLM + арбитраж с эвристиками. None = clean."""
+    """Гибрид: LLM + арбитраж + conditional recall-rescue. None = clean."""
     signals = compute_signal_scores(messages)
     heuristic_best, _ = signals.best()
+    signal_hints = format_signal_hints(signals)
 
-    llm_category = _classify_with_llm(llm_client, messages)
+    llm_category, api_ok = _classify_with_llm(llm_client, messages, signal_hints=signal_hints)
+
+    if not api_ok and not is_strong_clean_context(signals):
+        llm_category = _classify_compact(llm_client, messages, signal_hints=signal_hints)
+
     final = arbitrate(heuristic_best, llm_category, signals)
+
+    if final is None and needs_recall_rescue(signals):
+        rescue_category = _classify_rescue(llm_client, messages, signals, signal_hints=signal_hints)
+        if rescue_category is not None:
+            final = arbitrate(heuristic_best, rescue_category, signals)
 
     if final is None:
         return None
