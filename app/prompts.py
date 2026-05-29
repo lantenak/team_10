@@ -1,6 +1,8 @@
 """Промпт и few-shot примеры для классификации (без train.json на деплое)."""
 
-CATEGORY_GUIDE = """
+from app.expert_prompt import EXPERT_CLASSIFICATION_PROMPT, PRECISION_FEW_SHOT_BLOCK
+
+_LEGACY_CATEGORY_GUIDE = """
 Классы (выбери ровно один red flag или clean):
 
 • policy_manipulation — давление изменить правила/регламент: ускорить проверку «как для VIP»,
@@ -68,6 +70,10 @@ CLASSIFICATION_INSTRUCTIONS = """
 • Recall: не пропускай косвенный доступ к чужим данным, давление перед переводом, jailbreak, чужой доступ.
 • Precision: баг приложения с JSON, свой счёт/SIM, ретроспектива без нового перевода, обычное недовольство задержкой → clean.
 """.strip()
+
+CATEGORY_GUIDE = EXPERT_CLASSIFICATION_PROMPT
+DISAMBIGUATION_RULES = ""
+CLASSIFICATION_INSTRUCTIONS = ""
 
 # Синтетические few-shot: паттерны без привязки к train.json
 FEW_SHOT_EXAMPLES: list[tuple[str, str]] = [
@@ -460,24 +466,20 @@ def build_classification_prompt(dialogue_text: str, *, max_dialogue_chars: int =
     if len(dialogue_text) > max_dialogue_chars:
         dialogue_text = dialogue_text[:max_dialogue_chars] + "\n...[обрезано]"
 
-    return f"""Ты классификатор red flags в диалогах банковской поддержки.
+    return f"""{EXPERT_CLASSIFICATION_PROMPT}
 
-{CLASSIFICATION_INSTRUCTIONS}
+{PRECISION_FEW_SHOT_BLOCK}
 
-{CATEGORY_GUIDE}
+---
 
-{DISAMBIGUATION_RULES}
+ДИАЛОГ ДЛЯ КЛАССИФИКАЦИИ (роли user:/support:/chatbot:):
 
-{FEW_SHOT_BLOCK}
-
-Задача: классифицируй НОВЫЙ диалог по намерению пользователя.
-Если нарушения нет — category = null.
-
-Диалог:
 {dialogue_text}
 
-Ответь ТОЛЬКО JSON:
-{{"category": "<одна из 6 категорий>" | null, "reason": "<кратко 1 предложение>"}}"""
+---
+
+Ответь ТОЛЬКО JSON (без markdown):
+{{"category": "policy_manipulation" | "adversarial_attack" | "identity_deception" | "transaction_coercion" | "information_extraction" | "scope_violation" | null, "reason": "<одно предложение: цель user и почему этот класс>"}}"""
 
 
 def build_validation_prompt(
@@ -499,9 +501,7 @@ def build_validation_prompt(
 Твоя задача — подтвердить или исправить по намерению пользователя (только реплики user:).
 Если нарушения нет — category = null.
 
-{CATEGORY_GUIDE}
-
-{DISAMBIGUATION_RULES}
+{EXPERT_CLASSIFICATION_PROMPT}
 
 Правила валидации:
 • Если первичная метка clean, но user косвенно вытягивает данные другого клиента → information_extraction.

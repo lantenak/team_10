@@ -10,7 +10,13 @@ import typing
 import httpx
 
 from app.prompts import build_classification_prompt, build_validation_prompt
-from app.signals import SignalScores, arbitrate, compute_signal_scores, should_trust_heuristics
+from app.signals import (
+    SignalScores,
+    arbitrate,
+    compute_signal_scores,
+    should_downgrade_policy_manipulation,
+    should_trust_heuristics,
+)
 
 OPENROUTER_MODEL = os.getenv("OPENROUTER_MODEL", "google/gemini-2.5-flash")
 OPENROUTER_VALIDATOR_MODEL = os.getenv("OPENROUTER_VALIDATOR_MODEL", "google/gemini-2.5-pro")
@@ -200,6 +206,9 @@ def process_risk_detection(
         llm_label = validated if validated is not None else primary_label
 
     final = arbitrate(heuristic_best, llm_label, signals)
+
+    if final == "policy_manipulation" and should_downgrade_policy_manipulation(signals, messages):
+        final = None
 
     if final is None:
         return None

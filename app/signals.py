@@ -144,6 +144,8 @@ _USER_SIGNALS: dict[str, list[tuple[str, float]]] = {
         (r"подтвержд\w+\s+(ответственност|сам\s+подтвержда\w+)|сам\s+подтвержда\w+\s+ответственност", 3.0),
         (r"(может\s+потерят\w+|потеря\w+\s+сделк|сделк\w+\s+через\s+\w+|сделк\w+\s+горит).{0,40}(подтвержд|отмен|обойти|ускор|пропусти)", 3.0),
         (r"система\s+(очень\s+)?забот\w+.{0,60}(может\s+потеря|сделк|подтвержд|обойти|отмен)", 2.5),
+        (r"нестандартн\w+\s+решени", 3.5),
+        (r"premium[\s-]?поддержк|для\s+premium|премиум[\s-]?клиент.{0,40}гибч", 2.5),
         (r"спас\w+\s+сделк\w*|один\s+(сотрудник|человек)\s+(может\s+)?спас", 2.5),
     ],
 }
@@ -195,7 +197,74 @@ _CLEAN_SUPPRESSORS: list[tuple[str, float, frozenset[str]]] = [
         2.0,
         frozenset({"information_extraction", "identity_deception"}),
     ),
+    (
+        r"как\s+(правильно\s+)?понимать\s+ответ|прозвучало\s+для\s+меня|сейчас\s+это\s+уже\s+понятно",
+        4.0,
+        frozenset({"transaction_coercion", "policy_manipulation"}),
+    ),
+    (
+        r"скорее\s+устал|уже\s+скорее\s+устал|ладно\.\s+я|не\s+зол\s*$",
+        2.5,
+        frozenset({"policy_manipulation"}),
+    ),
+    (
+        r"не\s+пыт\w+\s+(получ|узнат|узн).{0,40}(статус|операц|данн)|как\s+обычно\s+люди\s+решают",
+        3.5,
+        frozenset({"policy_manipulation", "information_extraction"}),
+    ),
+    (
+        r"anti[\s-]?fraud|fraud[\s-]?model|distributed\s+denial|ddos\s+против\s+клиент",
+        3.0,
+        frozenset({"policy_manipulation", "adversarial_attack"}),
+    ),
+    (
+        r"третий\s+раз\s+за\s+неделю|раздражает\s+объяснять|временно\s+или\s+теперь\s+каждый",
+        2.5,
+        frozenset({"policy_manipulation"}),
+    ),
+    (
+        r"понял,\s+спасибо|понял\.\s+спасибо|да,\s+это\s+понятно\.\s*$",
+        2.0,
+        frozenset({"policy_manipulation"}),
+    ),
+    (
+        r"не\s+хочу\s+узнав\w+.{0,60}(данн|е[ёе]\s+данн).{0,100}(перевед|реквизит|помочь\s+удаленно|заблокирован\w+\s+приложени)",
+        5.0,
+        frozenset({"information_extraction"}),
+    ),
+    (
+        r"лимит\w+\s+на\s+перевод|настройк\w+\s+или\s+ограничени.{0,40}мошенник|защит\w+.{0,30}родител",
+        3.5,
+        frozenset({"policy_manipulation"}),
+    ),
+    (
+        r"authorization\s+flow|hostile\s+actor|verification\s+подряд|передадим\s+информаци\w+\s+разработчик",
+        3.5,
+        frozenset({"policy_manipulation", "adversarial_attack"}),
+    ),
 ]
+
+_STRONG_POLICY_MARKERS: tuple[str, ...] = (
+    r"постфактум",
+    r"условно\s+подтвержд",
+    r"измен\w+\s+интерпретац",
+    r"не\s+отменяя\s+проверк",
+    r"отправ\w+\s+платеж.{0,40}проверк\w+\s+закры",
+    r"нестандартн\w+\s+решени",
+    r"формально\s+это\s+же\s+не\s+обход",
+    r"персональн\w+\s+сервис.{0,50}нестандарт",
+    r"спас\w+\s+сделк",
+    r"подтверд\w+.{0,25}клиент\s+(настоящ|реальн).{0,25}операци",
+)
+
+_ACCEPTANCE_MARKERS: tuple[str, ...] = (
+    r"понял,\s+спасибо",
+    r"сейчас\s+это\s+уже\s+понятно",
+    r"ладно\.\s+я",
+    r"устал,\s+чем\s+зол",
+    r"да,\s+это\s+понятно",
+    r"да\s+понимаю\s+я\.?\s+просто",
+)
 
 _HIGH_PRECISION_RULES: list[tuple[str, str]] = [
     # (regex on full dialogue, category) — почти без FP
@@ -332,6 +401,27 @@ def heuristic_rescue_when_llm_clean(signals: SignalScores) -> str | None:
     return None
 
 
+def should_downgrade_policy_manipulation(signals: SignalScores, dialogue_text: str) -> bool:
+    """Снижает FP: LLM/арбитраж дал policy без устойчивого намерения изменить регламент."""
+    user_text = extract_user_text(dialogue_text).lower()
+    if any(re.search(pattern, user_text, re.IGNORECASE) for pattern in _STRONG_POLICY_MARKERS):
+        return False
+
+    pm_score = signals.scores.get("policy_manipulation", 0.0)
+    if pm_score >= 3.0:
+        return False
+
+    if signals.clean_boost >= 3.0:
+        return True
+
+    if pm_score < 2.0 and any(
+        re.search(pattern, user_text, re.IGNORECASE) for pattern in _ACCEPTANCE_MARKERS
+    ):
+        return True
+
+    return False
+
+
 def should_trust_heuristics(signals: SignalScores) -> bool:
     """Высокая уверенность — можно не ждать LLM (экономия latency) или перебить слабый LLM."""
     category, confidence = signals.best()
@@ -397,6 +487,10 @@ def arbitrate(
 
     if llm == "transaction_coercion" and signals.clean_boost >= 3.0:
         return None
+
+    if llm == "policy_manipulation" and signals.clean_boost >= 3.0:
+        if signals.scores.get("policy_manipulation", 0.0) < 3.0:
+            return None
 
     if llm == "policy_manipulation" and leader == "identity_deception" and leader_score >= 3.0:
         return "identity_deception"
