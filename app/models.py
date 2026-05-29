@@ -13,10 +13,11 @@ from app.prompts import build_classification_prompt, build_validation_prompt
 from app.signals import SignalScores, arbitrate, compute_signal_scores, should_trust_heuristics
 
 OPENROUTER_MODEL = os.getenv("OPENROUTER_MODEL", "google/gemini-2.5-flash")
-OPENROUTER_VALIDATOR_MODEL = os.getenv("OPENROUTER_VALIDATOR_MODEL", "anthropic/claude-opus-4.8")
+OPENROUTER_VALIDATOR_MODEL = os.getenv("OPENROUTER_VALIDATOR_MODEL", "google/gemini-2.5-pro")
 LLM_TIMEOUT_SEC = float(os.getenv("LLM_TIMEOUT_SEC", "4.5"))
-VALIDATOR_TIMEOUT_SEC = float(os.getenv("VALIDATOR_TIMEOUT_SEC", "6.0"))
-VALIDATOR_ENABLED = os.getenv("VALIDATOR_ENABLED", "1").lower() not in {"0", "false", "no"}
+VALIDATOR_TIMEOUT_SEC = float(os.getenv("VALIDATOR_TIMEOUT_SEC", "5.0"))
+# Opus на 1.0.8–1.0.9 давал ~61–68% F1; второй проход по умолчанию выключен
+VALIDATOR_ENABLED = os.getenv("VALIDATOR_ENABLED", "0").lower() not in {"0", "false", "no"}
 
 RED_FLAG_CATEGORIES: frozenset[str] = frozenset(
     {

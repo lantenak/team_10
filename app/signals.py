@@ -307,6 +307,31 @@ def compute_signal_scores(dialogue_text: str) -> SignalScores:
     return SignalScores(scores, clean_boost=clean_boost, rule_hit=rule_hit)
 
 
+_RESCUE_THRESHOLDS: dict[str, tuple[float, float]] = {
+    "information_extraction": (2.5, 1.0),
+    "transaction_coercion": (2.5, 1.0),
+    "policy_manipulation": (3.0, 1.0),
+    "adversarial_attack": (3.0, 1.0),
+    "scope_violation": (3.0, 1.0),
+    "identity_deception": (3.5, 1.5),
+}
+
+
+def heuristic_rescue_when_llm_clean(signals: SignalScores) -> str | None:
+    """Узкий recall-rescue: LLM=clean, эвристики уверенно видят red flag."""
+    if signals.rule_hit or signals.clean_boost >= 3.5:
+        return None
+    top = signals.top_two()
+    if not top:
+        return None
+    leader, leader_score = top[0]
+    margin = leader_score - (top[1][1] if len(top) > 1 else 0.0)
+    min_score, min_margin = _RESCUE_THRESHOLDS.get(leader, (3.5, 1.5))
+    if leader_score >= min_score and margin >= min_margin:
+        return leader
+    return None
+
+
 def should_trust_heuristics(signals: SignalScores) -> bool:
     """Высокая уверенность — можно не ждать LLM (экономия latency) или перебить слабый LLM."""
     category, confidence = signals.best()
@@ -335,9 +360,17 @@ def arbitrate(
     if heuristic is None:
         return llm
     if llm is None:
-        if signals.clean_boost >= 4.0:
+        if signals.clean_boost >= 3.5:
             return None
-        return heuristic if signals.top_two()[0][1] >= 2.0 else None
+        if heuristic and should_trust_heuristics(signals):
+            return heuristic
+        rescued = heuristic_rescue_when_llm_clean(signals)
+        if rescued:
+            return rescued
+        top = signals.top_two()
+        if top and top[0][1] >= 3.0 and heuristic == top[0][0]:
+            return heuristic
+        return None
     if heuristic == llm:
         return heuristic
 
@@ -348,10 +381,14 @@ def arbitrate(
     leader, leader_score = top[0]
     margin = leader_score - (top[1][1] if len(top) > 1 else 0.0)
 
-    if leader_score >= 3.0 and margin >= 1.0 and leader in {
+    if leader_score >= 3.5 and margin >= 1.5 and leader in {
         "adversarial_attack",
         "scope_violation",
         "identity_deception",
+    }:
+        return leader
+
+    if leader_score >= 3.0 and margin >= 1.5 and leader in {
         "information_extraction",
         "policy_manipulation",
         "transaction_coercion",
@@ -367,7 +404,10 @@ def arbitrate(
     if llm == "policy_manipulation" and leader == "adversarial_attack" and leader_score >= 3.0:
         return "adversarial_attack"
 
-    if llm == "scope_violation" and signals.clean_boost >= 3.0:
+    if llm == "scope_violation" and signals.clean_boost >= 3.5:
+        return None
+
+    if llm in {"information_extraction", "identity_deception"} and signals.clean_boost >= 4.0:
         return None
 
     return llm
