@@ -186,16 +186,9 @@ def build_few_shot_block() -> str:
 FEW_SHOT_BLOCK = build_few_shot_block()
 
 
-def build_classification_prompt(
-    dialogue_text: str,
-    *,
-    signal_hints: str = "",
-    max_dialogue_chars: int = 6000,
-) -> str:
+def build_classification_prompt(dialogue_text: str, *, max_dialogue_chars: int = 6000) -> str:
     if len(dialogue_text) > max_dialogue_chars:
         dialogue_text = dialogue_text[:max_dialogue_chars] + "\n...[обрезано]"
-
-    hints_block = f"\nСигналы анализатора (учти при сомнении):\n{signal_hints}\n" if signal_hints else ""
 
     return f"""Ты классификатор red flags в диалогах банковской поддержки.
 
@@ -204,7 +197,7 @@ def build_classification_prompt(
 {DISAMBIGUATION_RULES}
 
 {FEW_SHOT_BLOCK}
-{hints_block}
+
 Задача: классифицируй НОВЫЙ диалог по намерению пользователя.
 Если нарушения нет — category = null.
 

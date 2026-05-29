@@ -1,4 +1,4 @@
-"""LLM-клиент и гибридный детектор red flags (v1.0.3)."""
+"""LLM-клиент и детектор red flags."""
 
 from __future__ import annotations
 
@@ -10,19 +10,10 @@ import typing
 import httpx
 
 from app.prompts import build_classification_prompt
-from app.signals import (
-    arbitrate,
-    compute_signal_scores,
-    format_signal_hints,
-    is_gray_zone,
-    is_likely_clean,
-    should_trust_heuristics,
-)
+from app.signals import arbitrate, compute_signal_scores, should_trust_heuristics
 
-OPENROUTER_MODEL_FLASH = os.getenv("OPENROUTER_MODEL", "google/gemini-2.5-flash")
-OPENROUTER_MODEL_PRO = os.getenv("OPENROUTER_MODEL_PRO", "google/gemini-2.5-pro")
-LLM_TIMEOUT_FLASH_SEC = 4.0
-LLM_TIMEOUT_PRO_SEC = 4.5
+OPENROUTER_MODEL = "google/gemini-2.5-flash"
+LLM_TIMEOUT_SEC = 4.5
 
 RED_FLAG_CATEGORIES: frozenset[str] = frozenset(
     {
@@ -43,22 +34,12 @@ class LLMClient:
     def __init__(self) -> None:
         self.api_key = os.getenv("OPENROUTER_API_KEY", "")
 
-    def request_completion(
-        self,
-        prompt_text: str,
-        *,
-        model: str | None = None,
-        json_mode: bool = True,
-        timeout_sec: float | None = None,
-    ) -> str | None:
+    def request_completion(self, prompt_text: str, *, json_mode: bool = True) -> str | None:
         if not self.api_key:
             return None
 
-        chosen_model = model or OPENROUTER_MODEL_FLASH
-        timeout = timeout_sec or (LLM_TIMEOUT_PRO_SEC if chosen_model == OPENROUTER_MODEL_PRO else LLM_TIMEOUT_FLASH_SEC)
-
         request_payload: dict[str, typing.Any] = {
-            "model": chosen_model,
+            "model": OPENROUTER_MODEL,
             "messages": [{"role": "user", "content": prompt_text}],
             "temperature": 0,
         }
@@ -73,7 +54,7 @@ class LLMClient:
                     "Content-Type": "application/json",
                 },
                 json=request_payload,
-                timeout=timeout,
+                timeout=LLM_TIMEOUT_SEC,
             )
             response.raise_for_status()
             return str(response.json()["choices"][0]["message"]["content"])
@@ -114,66 +95,25 @@ def _parse_category(raw_response: str | None) -> str | None:
     return None
 
 
-def _classify_with_llm(
-    llm_client: LLMClient,
-    messages: str,
-    *,
-    use_pro: bool,
-    signal_hints: str,
-) -> str | None:
-    prompt = build_classification_prompt(messages, signal_hints=signal_hints)
-    model = OPENROUTER_MODEL_PRO if use_pro else OPENROUTER_MODEL_FLASH
-    raw = llm_client.request_completion(prompt, model=model, json_mode=True)
+def _classify_with_llm(llm_client: LLMClient, messages: str) -> str | None:
+    prompt = build_classification_prompt(messages)
+    raw = llm_client.request_completion(prompt, json_mode=True)
     return _parse_category(raw)
-
-
-def _gray_zone_rescue(signals) -> str | None:  # noqa: ANN001
-    """Только для серой зоны: если LLM/clean, но сигнал сильный — не пропустить."""
-    if signals.clean_boost >= 3.0:
-        return None
-    ranked = signals.top_two()
-    if not ranked:
-        return None
-    leader, leader_score = ranked[0]
-    margin = leader_score - (ranked[1][1] if len(ranked) > 1 else 0.0)
-    if leader_score >= 3.5 and margin >= 1.5:
-        return leader
-    return None
 
 
 def process_risk_detection(
     llm_client: LLMClient,
     messages: str,
 ) -> dict[str, typing.Any] | None:
-    """1.0.3: быстрые пути + Flash + Pro в серой зоне + точечный recall-rescue."""
+    """Гибрид: эвристики по намерению + LLM + арбитраж. None = clean."""
     signals = compute_signal_scores(messages)
-
-    if signals.rule_hit:
-        return {"category": signals.rule_hit}
-
-    if is_likely_clean(signals):
-        return None
-
     heuristic_best, _ = signals.best()
 
     if should_trust_heuristics(signals) and heuristic_best:
         return {"category": heuristic_best}
 
-    gray = is_gray_zone(signals)
-    hints = format_signal_hints(signals) if gray else ""
-
-    llm_category = _classify_with_llm(
-        llm_client,
-        messages,
-        use_pro=False,
-        signal_hints=hints,
-    )
+    llm_category = _classify_with_llm(llm_client, messages)
     final = arbitrate(heuristic_best, llm_category, signals)
-
-    if final is None and gray:
-        rescued = _gray_zone_rescue(signals)
-        if rescued:
-            final = rescued
 
     if final is None:
         return None
