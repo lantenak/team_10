@@ -61,7 +61,7 @@ def main() -> None:
     y_pred: list[str] = []
     latencies_ms: list[int] = []
 
-    print(f"Оценка {len(records)} диалогов (model={llm_client.api_key[:8]}...)")
+    print(f"Оценка {len(records)} диалогов (model={getattr(llm_client, 'model', '?')})")
     for index, record in enumerate(records, start=1):
         truth = _true_label(record)
         started = time.perf_counter()

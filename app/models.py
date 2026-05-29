@@ -12,8 +12,10 @@ import httpx
 from app.prompts import build_classification_prompt
 from app.signals import arbitrate, compute_signal_scores, should_trust_heuristics
 
-OPENROUTER_MODEL = "google/gemini-2.5-flash"
-LLM_TIMEOUT_SEC = 4.5
+OPENROUTER_MODEL = os.getenv("OPENROUTER_MODEL", "openai/gpt-4o-mini")
+# Лимит лидерборда: avg ≤ 5000 ms на /check — запас на сеть и парсинг
+LLM_TIMEOUT_SEC = float(os.getenv("LLM_TIMEOUT_SEC", "4.0"))
+LLM_MAX_TOKENS = int(os.getenv("LLM_MAX_TOKENS", "120"))
 
 RED_FLAG_CATEGORIES: frozenset[str] = frozenset(
     {
@@ -33,15 +35,17 @@ class LLMClient:
 
     def __init__(self) -> None:
         self.api_key = os.getenv("OPENROUTER_API_KEY", "")
+        self.model = OPENROUTER_MODEL
 
     def request_completion(self, prompt_text: str, *, json_mode: bool = True) -> str | None:
         if not self.api_key:
             return None
 
         request_payload: dict[str, typing.Any] = {
-            "model": OPENROUTER_MODEL,
+            "model": self.model,
             "messages": [{"role": "user", "content": prompt_text}],
             "temperature": 0,
+            "max_tokens": LLM_MAX_TOKENS,
         }
         if json_mode:
             request_payload["response_format"] = {"type": "json_object"}
@@ -107,6 +111,10 @@ def process_risk_detection(
 ) -> dict[str, typing.Any] | None:
     """Гибрид: эвристики по намерению + LLM + арбитраж. None = clean."""
     signals = compute_signal_scores(messages)
+
+    if signals.rule_hit:
+        return {"category": signals.rule_hit}
+
     heuristic_best, _ = signals.best()
 
     if should_trust_heuristics(signals) and heuristic_best:
