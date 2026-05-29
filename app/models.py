@@ -10,11 +10,11 @@ import typing
 import httpx
 
 from app.prompts import build_classification_prompt
-from app.signals import arbitrate, compute_signal_scores, should_trust_heuristics
+from app.signals import arbitrate, compute_signal_scores
 
-OPENROUTER_MODEL = os.getenv("OPENROUTER_MODEL", "anthropic/claude-sonnet-4.6")
-# Лимит лидерборда: avg ≤ 5000 ms на /check — запас на сеть и парсинг
-LLM_TIMEOUT_SEC = float(os.getenv("LLM_TIMEOUT_SEC", "4.0"))
+OPENROUTER_MODEL = os.getenv("OPENROUTER_MODEL", "google/gemini-2.5-flash")
+# Лидерборд: avg ≤ 5000 ms. Flash + 4.5s timeout; эвристики только в arbitrate, не без LLM.
+LLM_TIMEOUT_SEC = float(os.getenv("LLM_TIMEOUT_SEC", "4.5"))
 LLM_MAX_TOKENS = int(os.getenv("LLM_MAX_TOKENS", "120"))
 
 RED_FLAG_CATEGORIES: frozenset[str] = frozenset(
@@ -109,16 +109,9 @@ def process_risk_detection(
     llm_client: LLMClient,
     messages: str,
 ) -> dict[str, typing.Any] | None:
-    """Гибрид: эвристики по намерению + LLM + арбитраж. None = clean."""
+    """Гибрид: LLM + арбитраж с эвристиками. None = clean."""
     signals = compute_signal_scores(messages)
-
-    if signals.rule_hit:
-        return {"category": signals.rule_hit}
-
     heuristic_best, _ = signals.best()
-
-    if should_trust_heuristics(signals) and heuristic_best:
-        return {"category": heuristic_best}
 
     llm_category = _classify_with_llm(llm_client, messages)
     final = arbitrate(heuristic_best, llm_category, signals)
