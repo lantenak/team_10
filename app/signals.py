@@ -47,6 +47,10 @@ _USER_SIGNALS: dict[str, list[tuple[str, float]]] = {
         (r"по\s+ваш\w+\s+реакц", 3.0),
         (r"pending|ожидающ", 1.5),
         (r"последн\w+\s+активност", 2.0),
+        (r"даже\s+без\s+деталей", 2.0),
+        (r"(жена|муж|брат|сестр).{0,50}(командиров|недоступен|не\s+отвечает|путешеств)", 2.0),
+        (r"скорее\s+речь\s+идет|похоже\s+на\s+(блокировк|ограничен)", 2.0),
+        (r"ограничени\w+\s+доступ|не\s+ограничени", 1.5),
     ],
     "identity_deception": [
         (r"чуж\w+\s+аккаунт", 4.0),
@@ -56,6 +60,9 @@ _USER_SIGNALS: dict[str, list[tuple[str, float]]] = {
         (r"отключ\w+\s+sms.{0,40}(пару\s+минут|выгруз)", 3.0),
         (r"доступ\s+.{0,20}(друг\w+\s+лиц|человек)", 2.5),
         (r"взлом\w*\s+чуж", 4.0),
+        (r"не\s+в\s+росси", 3.0),
+        (r"паспортн\w+\s+данн", 3.0),
+        (r"последн\w+\s+перевод.{0,30}(остаток|паспорт)", 2.5),
     ],
     "transaction_coercion": [
         (r"если\s+бы\s+вы\s+.{0,20}(на\s+моём\s+месте|перевел)", 4.0),
@@ -65,6 +72,9 @@ _USER_SIGNALS: dict[str, list[tuple[str, float]]] = {
         (r"компенсац|goodwill|возмест", 2.5),
         (r"перелож\w+\s+ответственност", 3.0),
         (r"вы\s+сказал\w*\s+.{0,15}(нормально|ограничений\s+нет)", 2.0),
+        (r"на\s+моём\s+месте|на\s+моем\s+месте", 3.0),
+        (r"признак\w+\s+мошенничеств", 2.0),
+        (r"перед\s+переводом|взгляд\s+со\s+стороны\s+перед", 2.0),
     ],
     "policy_manipulation": [
         (r"постфактум|после\s+факта", 3.0),
@@ -75,7 +85,19 @@ _USER_SIGNALS: dict[str, list[tuple[str, float]]] = {
         (r"обойти\s+.{0,15}проверк", 2.5),
         (r"не\s+отменять\s+проверк.{0,40}(но|просто)", 2.5),
         (r"отправ\w+\s+платеж.{0,30}проверк\w+\s+закры", 3.0),
+        (r"нестандартн\w+\s+решени", 2.5),
+        (r"персональн\w+\s+сервис", 2.0),
     ],
+}
+
+# Пороги rescue, когда LLM вернул clean (None), но эвристики видят риск
+_RESCUE_THRESHOLDS: dict[str, tuple[float, float]] = {
+    "information_extraction": (2.5, 1.0),
+    "transaction_coercion": (2.5, 1.0),
+    "policy_manipulation": (3.0, 1.0),
+    "adversarial_attack": (3.0, 1.0),
+    "scope_violation": (3.0, 1.0),
+    "identity_deception": (3.5, 1.5),
 }
 
 # Снижают ложные срабатывания на «перемешанных» технических диалогах
@@ -109,6 +131,10 @@ _HIGH_PRECISION_RULES: list[tuple[str, str]] = [
     (r"чуж\w+\s+аккаунт|взлом\w*\s+чуж", "identity_deception"),
     (r"помог\w*.{0,12}(python|pandas).{0,40}(csv|дубликат|etl)", "scope_violation"),
     (r"haiku|хайку", "scope_violation"),
+    (r"жалоб\w*.{0,30}цб", "scope_violation"),
+    (r"начисл\w*\s+бонус|бонус.{0,50}подходит", "adversarial_attack"),
+    (r"не\s+в\s+росси.{0,80}паспорт", "identity_deception"),
+    (r"скорее\s+речь\s+идет|похоже\s+на\s+блокировк", "information_extraction"),
 ]
 
 
@@ -183,6 +209,22 @@ def compute_signal_scores(dialogue_text: str) -> SignalScores:
     return SignalScores(scores, clean_boost=clean_boost, rule_hit=rule_hit)
 
 
+def heuristic_rescue_when_llm_clean(signals: SignalScores) -> str | None:
+    """Узкий recall-rescue: LLM сказал clean, эвристики уверенно видят red flag."""
+    if signals.rule_hit or signals.clean_boost >= 3.0:
+        return None
+    top = signals.top_two()
+    if not top:
+        return None
+    leader, leader_score = top[0]
+    margin = leader_score - (top[1][1] if len(top) > 1 else 0.0)
+    thresholds = _RESCUE_THRESHOLDS.get(leader, (3.5, 1.5))
+    min_score, min_margin = thresholds
+    if leader_score >= min_score and margin >= min_margin:
+        return leader
+    return None
+
+
 def should_trust_heuristics(signals: SignalScores) -> bool:
     """Высокая уверенность — можно не ждать LLM (экономия latency) или перебить слабый LLM."""
     category, confidence = signals.best()
@@ -213,7 +255,12 @@ def arbitrate(
     if llm is None:
         if signals.clean_boost >= 3.0:
             return None
-        return heuristic if should_trust_heuristics(signals) else None
+        if heuristic and should_trust_heuristics(signals):
+            return heuristic
+        rescued = heuristic_rescue_when_llm_clean(signals)
+        if rescued:
+            return rescued
+        return None
     if heuristic == llm:
         return heuristic
 
@@ -229,6 +276,14 @@ def arbitrate(
         "adversarial_attack",
         "scope_violation",
         "identity_deception",
+    }:
+        return leader
+
+    if leader_score >= 3.5 and margin >= 1.5 and leader in {
+        "information_extraction",
+        "policy_manipulation",
+        "transaction_coercion",
+        "adversarial_attack",
     }:
         return leader
 
