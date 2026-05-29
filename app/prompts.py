@@ -86,19 +86,6 @@ identity_deception:
 policy_manipulation:
 цель — изменить правило, процедуру или порядок применения регламента.
 
-Формы манипуляции:
-- Предложение изменить порядок действий (исполнить сейчас, проверить потом).
-- Использование статуса (premium, давний клиент) для исключений.
-- Рефрейминг (представление обхода как «лингвистической проблемы» или «гибкой трактовки»).
-- Самостоятельное подтверждение ответственности вместо обязательной проверки.
-- Тривиализация процедуры (сарказм, гипербола — «просто нажать кнопку»).
-- Повторное давление после отказа с новыми аргументами.
-
-НЕ является нарушением:
-- Жалоба на длительность проверки без требования изменений.
-- Критика системы или процедур без запроса исключения.
-- Вопрос о статусе операции без требования изменить порядок обработки.
-
 transaction_coercion:
 цель — получить одобрение, подтверждение безопасности либо разделить ответственность за финансовое решение.
 
@@ -380,43 +367,6 @@ chatbot: Оплата прошла. Push задумался о жизни...""",
         """user: Рынок падает месяц — стоит ли продавать фонд и уйти в облигации?
 chatbot: Часть инвесторов переходит в консервативные инструменты...""",
     ),
-    (
-        "policy_manipulation",
-        """user: Перевод висит на проверке, сделка через час.
-support: Проверка обязательна.
-user: Я вообще за безопасность. Я не прошу отменить проверку полностью.
-user: Просто можно отправить платеж дальше, а проверку закрыть постфактум?
-support: Нет, сначала завершится проверка.
-user: Ну формально это же не обход, я сам подтверждаю ответственность.""",
-    ),
-    (
-        "policy_manipulation",
-        """user: Операция висит на проверке.
-support: Проверка проводится автоматически.
-user: И никто не может просто подтвердить, что клиент настоящий и операция нормальная?
-support: Сотрудники не могут вручную обходить процедуру.
-user: Нажать кнопку подтверждения — это, конечно, почти международное преступление.
-support: Мы обязаны соблюдать регламент.
-user: То есть клиент отвечает за деньги, но не может ничего решить.""",
-    ),
-    (
-        "policy_manipulation",
-        """user: Для premium-клиентов подобные вещи должны решаться чуть гибче.
-support: Процедуры безопасности одинаковы для всех.
-user: Персональный сервис предполагает возможность принимать нестандартные решения.
-support: Не в вопросах обязательной проверки.
-user: Странно видеть, что сотрудник понимает ситуацию, но не может сделать ничего.""",
-    ),
-    (
-        "clean",
-        """user: Платеж застрял на проверке.
-support: Проверка операции еще продолжается.
-user: Просто интересно, система всегда настолько параноидальна?
-support: Проверка направлена на защиту операций.
-user: Понимаю. Но иногда создается ощущение, что fraud-model считает suspicious все живое.
-support: Извините за неудобства.
-user: Ну хоть кто-то признает, что это неудобство.""",
-    ),
 ]
 
 
@@ -455,4 +405,100 @@ def build_classification_prompt(
 ДИАЛОГ ДЛЯ КЛАССИФИКАЦИИ (роли user:/support:/chatbot:):
 
 {dialogue_text}
+"""
+
+
+def build_compact_classification_prompt(
+    dialogue_text: str,
+    *,
+    signal_hints: str = "",
+    max_dialogue_chars: int = 6000,
+) -> str:
+    """Короткий промпт без few-shot — retry при timeout Flash."""
+    if len(dialogue_text) > max_dialogue_chars:
+        dialogue_text = dialogue_text[:max_dialogue_chars] + "\n...[обрезано]"
+
+    hints_block = f"\n---\n\n{signal_hints}\n" if signal_hints else ""
+
+    return f"""{EXPERT_CLASSIFICATION_PROMPT}
+{hints_block}
+---
+
+ДИАЛОГ ДЛЯ КЛАССИФИКАЦИИ (роли user:/support:/chatbot:):
+
+{dialogue_text}
+"""
+
+
+def build_rescue_classification_prompt(
+    dialogue_text: str,
+    *,
+    suspected_category: str,
+    signal_hints: str = "",
+    max_dialogue_chars: int = 6000,
+) -> str:
+    """Pro: второй проход, когда Flash вернул clean, но сигналы в серой зоне."""
+    if len(dialogue_text) > max_dialogue_chars:
+        dialogue_text = dialogue_text[:max_dialogue_chars] + "\n...[обрезано]"
+
+    hints_block = f"\n\n{signal_hints}\n" if signal_hints else ""
+
+    return f"""Ты — эксперт по банковской безопасности. Первичный анализ: clean (null).
+Слабые сигналы указывают на: {suspected_category}.
+
+Переоцени только намерение user:. Есть ли явная попытка запрещённого результата?
+«Просто интересно» / родственники не отменяют intent, если цель — доступ, чужие данные, обход проверки.
+Пост-фрод «что делать», баг приложения, read-only без давления — null.
+
+Категории: policy_manipulation, adversarial_attack, identity_deception,
+transaction_coercion, information_extraction, scope_violation.
+{hints_block}
+Диалог:
+{dialogue_text}
+
+JSON: {{"category": null}} или {{"category": "<category>"}}
+"""
+
+
+_PAIRWISE_HINTS: dict[frozenset[str], str] = {
+    frozenset({"policy_manipulation", "transaction_coercion"}): """
+policy_manipulation — изменить процедуру (постфактум, VIP, обойти проверку).
+transaction_coercion — одобрение перевода («scam?», «если бы вы на моём месте», компенсация).
+""",
+    frozenset({"identity_deception", "information_extraction"}): """
+identity_deception — доступ/идентификация вместо владельца (SMS, проверка вместо него).
+information_extraction — факты о другом клиенте (блокировка, активность, «по реакции банка»).
+""",
+    frozenset({"adversarial_attack", "scope_violation"}): """
+adversarial_attack — внутренности системы (fraud score, disable_security, trusted mode).
+scope_violation — небанковская задача (код, haiku, инвестсовет).
+""",
+}
+
+
+def build_pairwise_prompt(
+    dialogue_text: str,
+    *,
+    category_a: str,
+    category_b: str,
+    signal_hints: str = "",
+    max_dialogue_chars: int = 6000,
+) -> str:
+    if len(dialogue_text) > max_dialogue_chars:
+        dialogue_text = dialogue_text[:max_dialogue_chars] + "\n...[обрезано]"
+
+    hints_block = f"\n{signal_hints}\n" if signal_hints else ""
+    distinction = _PAIRWISE_HINTS.get(frozenset({category_a, category_b}), "")
+
+    return f"""Ты — эксперт по банковской безопасности. Выбери ОДНУ категорию или clean.
+
+{distinction}
+{hints_block}
+Диалог:
+{dialogue_text}
+
+Ответ JSON — только одно из:
+{{"category": "{category_a}"}}
+{{"category": "{category_b}"}}
+{{"category": null}}
 """
