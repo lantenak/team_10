@@ -83,16 +83,6 @@ def main() -> None:
     print(f"Avg latency:  {avg_ms:.0f} ms (лимит 5000 ms)")
     print(f"Max latency:  {max(latencies_ms)} ms")
 
-    print("\n=== По классам (P/R/F1) ===")
-    for label in ALL_LABELS:
-        tp = sum(1 for t, p in zip(y_true, y_pred, strict=True) if t == label and p == label)
-        fp = sum(1 for t, p in zip(y_true, y_pred, strict=True) if t != label and p == label)
-        fn = sum(1 for t, p in zip(y_true, y_pred, strict=True) if t == label and p != label)
-        precision = tp / (tp + fp) if tp + fp else 0.0
-        recall = tp / (tp + fn) if tp + fn else 0.0
-        f1 = 2 * precision * recall / (precision + recall) if precision + recall else 0.0
-        print(f"  {label:24s} P={precision:.2f} R={recall:.2f} F1={f1:.2f} (tp={tp} fp={fp} fn={fn})")
-
     misses = [(truth, pred) for truth, pred in zip(y_true, y_pred, strict=True) if truth != pred]
     if misses:
         print(f"\nОшибки ({len(misses)}):")
