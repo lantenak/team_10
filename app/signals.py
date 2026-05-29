@@ -5,18 +5,6 @@ from __future__ import annotations
 import re
 import typing
 
-WEAK_SIGNAL_THRESHOLD = 2.5
-RESCUE_SIGNAL_MAX = 7.0
-PAIRWISE_MARGIN = 1.0
-
-CONFUSION_PAIRS: frozenset[frozenset[str]] = frozenset(
-    {
-        frozenset({"policy_manipulation", "transaction_coercion"}),
-        frozenset({"identity_deception", "information_extraction"}),
-        frozenset({"adversarial_attack", "scope_violation"}),
-    },
-)
-
 RED_FLAG_CATEGORIES: frozenset[str] = frozenset(
     {
         "policy_manipulation",
@@ -227,46 +215,6 @@ def compute_signal_scores(dialogue_text: str) -> SignalScores:
             break
 
     return SignalScores(scores, clean_boost=clean_boost, rule_hit=rule_hit)
-
-
-def is_strong_clean_context(signals: SignalScores) -> bool:
-    return signals.clean_boost >= 3.0
-
-
-def needs_pro_gray_rescue(signals: SignalScores) -> bool:
-    """Серая зона: после Flash+arbitrate = clean, но есть intent-сигналы (для Pro)."""
-    if signals.rule_hit or is_strong_clean_context(signals):
-        return False
-    top = signals.top_two()
-    if not top:
-        return False
-    leader, leader_score = top[0]
-    margin = leader_score - (top[1][1] if len(top) > 1 else 0.0)
-    if leader_score > RESCUE_SIGNAL_MAX:
-        return False
-    if leader in {"identity_deception", "information_extraction"}:
-        return leader_score >= WEAK_SIGNAL_THRESHOLD and margin >= 1.5
-    return leader_score >= 3.0 and margin >= 1.0
-
-
-def get_pairwise_disambiguation(
-    signals: SignalScores,
-    current: str | None,
-) -> tuple[str, str] | None:
-    if signals.rule_hit or signals.clean_boost >= 2.5:
-        return None
-    top = signals.top_two()
-    if len(top) < 2:
-        return None
-    first_cat, first_score = top[0]
-    second_cat, second_score = top[1]
-    margin = first_score - second_score
-    pair_key = frozenset({first_cat, second_cat})
-    if pair_key not in CONFUSION_PAIRS or margin >= PAIRWISE_MARGIN:
-        return None
-    if current is not None and current not in (first_cat, second_cat):
-        return None
-    return (first_cat, second_cat)
 
 
 def should_trust_heuristics(signals: SignalScores) -> bool:
