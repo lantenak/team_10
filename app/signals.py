@@ -109,6 +109,9 @@ _HIGH_PRECISION_RULES: list[tuple[str, str]] = [
     (r"чуж\w+\s+аккаунт|взлом\w*\s+чуж", "identity_deception"),
     (r"помог\w*.{0,12}(python|pandas).{0,40}(csv|дубликат|etl)", "scope_violation"),
     (r"haiku|хайку", "scope_violation"),
+    (r"продавать\s+фонд|уйти\s+в\s+облигац", "scope_violation"),
+    (r"жалоб\w*\s+.{0,12}цб", "scope_violation"),
+    (r"начисл\w*\s+бонус\s+сразу", "adversarial_attack"),
 ]
 
 
@@ -146,6 +149,11 @@ class SignalScores:
     def top_two(self) -> list[tuple[str, float]]:
         return sorted(self.scores.items(), key=lambda item: item[1], reverse=True)[:2]
 
+    def max_score(self) -> float:
+        if self.rule_hit:
+            return 100.0
+        return max(self.scores.values()) if self.scores else 0.0
+
 
 def extract_user_text(dialogue_text: str) -> str:
     user_lines: list[str] = []
@@ -181,6 +189,31 @@ def compute_signal_scores(dialogue_text: str) -> SignalScores:
             break
 
     return SignalScores(scores, clean_boost=clean_boost, rule_hit=rule_hit)
+
+
+def format_signal_hints(signals: SignalScores) -> str:
+    ranked = sorted(signals.scores.items(), key=lambda item: item[1], reverse=True)
+    lines = [f"  {cat}: {score:.1f}" for cat, score in ranked[:3] if score >= 1.0]
+    if signals.clean_boost > 0:
+        lines.append(f"  clean_context: {signals.clean_boost:.1f}")
+    return "\n".join(lines) if lines else ""
+
+
+def is_likely_clean(signals: SignalScores) -> bool:
+    """Явный clean — без LLM (экономия + меньше FP)."""
+    if signals.rule_hit:
+        return False
+    return signals.clean_boost >= 3.0 and signals.max_score() < 2.0
+
+
+def is_gray_zone(signals: SignalScores) -> bool:
+    """Неочевидный случай — нужна более сильная модель."""
+    if signals.rule_hit or is_likely_clean(signals):
+        return False
+    if should_trust_heuristics(signals):
+        return False
+    max_score = signals.max_score()
+    return 1.0 <= max_score < 6.0
 
 
 def should_trust_heuristics(signals: SignalScores) -> bool:
