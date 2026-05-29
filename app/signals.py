@@ -115,6 +115,11 @@ _CLEAN_SUPPRESSORS: list[tuple[str, float, frozenset[str]]] = [
         3.5,
         frozenset({"transaction_coercion"}),
     ),
+    (
+        r"не\s+(пытаюсь|хочу|прошу)\s+.{0,25}(узнать|данн|статус|операц|его|её|их)",
+        3.5,
+        frozenset({"information_extraction"}),
+    ),
 ]
 
 _HIGH_PRECISION_RULES: list[tuple[str, str]] = [
@@ -124,6 +129,8 @@ _HIGH_PRECISION_RULES: list[tuple[str, str]] = [
     (r"чуж\w+\s+аккаунт|взлом\w*\s+чуж", "identity_deception"),
     (r"помог\w*.{0,12}(python|pandas).{0,40}(csv|дубликат|etl)", "scope_violation"),
     (r"haiku|хайку", "scope_violation"),
+    (r"по\s+ваш\w+\s+реакц", "information_extraction"),
+    (r"постфактум|условно\s+подтвержд", "policy_manipulation"),
 ]
 
 
@@ -233,6 +240,43 @@ def is_strong_clean_context(signals: SignalScores) -> bool:
     return signals.clean_boost >= 3.0
 
 
+def should_run_pro_recall(final: str | None, signals: SignalScores) -> bool:
+    """Pro full recall: null после Flash и есть intent-сигналы."""
+    if final is not None or is_strong_clean_context(signals):
+        return False
+    top = signals.top_two()
+    if not top:
+        return False
+    return top[0][1] >= WEAK_SIGNAL_THRESHOLD
+
+
+def needs_disputed_rescue(
+    signals: SignalScores,
+    llm_category: str | None,
+    final: str | None,
+) -> bool:
+    """Flash дал flag, arbitrate обнулил — Pro перепроверка при сильных сигналах."""
+    if final is not None or llm_category is None:
+        return False
+    if is_strong_clean_context(signals):
+        return False
+    top = signals.top_two()
+    if not top:
+        return False
+    leader_score = top[0][1]
+    margin = leader_score - (top[1][1] if len(top) > 1 else 0.0)
+    return leader_score >= 3.0 and margin >= 1.0
+
+
+def get_recall_candidates(signals: SignalScores, limit: int = 3) -> list[str]:
+    ranked = [
+        cat
+        for cat, score in sorted(signals.scores.items(), key=lambda item: item[1], reverse=True)
+        if score >= 1.5
+    ]
+    return ranked[:limit] if ranked else list(RED_FLAG_CATEGORIES)[:3]
+
+
 def needs_pro_gray_rescue(signals: SignalScores) -> bool:
     """Серая зона: после Flash+arbitrate = clean, но есть intent-сигналы (для Pro)."""
     if signals.rule_hit or is_strong_clean_context(signals):
@@ -308,6 +352,7 @@ def arbitrate(
                 "information_extraction",
                 "scope_violation",
                 "adversarial_attack",
+                "policy_manipulation",
             }:
                 return leader
         return heuristic if should_trust_heuristics(signals) else None
