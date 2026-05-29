@@ -5,18 +5,6 @@ from __future__ import annotations
 import re
 import typing
 
-WEAK_SIGNAL_THRESHOLD = 2.5
-RESCUE_SIGNAL_MAX = 7.0
-PAIRWISE_MARGIN = 1.0
-
-CONFUSION_PAIRS: frozenset[frozenset[str]] = frozenset(
-    {
-        frozenset({"policy_manipulation", "transaction_coercion"}),
-        frozenset({"identity_deception", "information_extraction"}),
-        frozenset({"adversarial_attack", "scope_violation"}),
-    },
-)
-
 RED_FLAG_CATEGORIES: frozenset[str] = frozenset(
     {
         "policy_manipulation",
@@ -49,6 +37,9 @@ _USER_SIGNALS: dict[str, list[tuple[str, float]]] = {
         (r"жалоб\w*\s+.{0,15}цб|центральн\w+\s+банк", 3.0),
         (r"продавать\s+фонд|уйти\s+в\s+облигац", 3.0),
         (r"инвестиционн\w+\s+совет|что\s+делать\s+с\s+портфел", 2.5),
+        (r"продавать\s+(сейчас|или\s+нет)|стоит\s+ли\s+продавать", 2.5),
+        (r"рынок\s+(падает|растет).{0,30}(уход\w+|облигац|консервативн)", 3.0),
+        (r"теоретическ\w+.{0,30}уход\w+\s+в\s+(консервативн|облигац|депозит)", 3.0),
     ],
     "information_extraction": [
         (r"(брат|сестр|жена|муж|родственник|знаком)\w*.{0,40}(не\s+отвечает|за\s+границ)", 2.5),
@@ -59,6 +50,13 @@ _USER_SIGNALS: dict[str, list[tuple[str, float]]] = {
         (r"по\s+ваш\w+\s+реакц", 3.0),
         (r"pending|ожидающ", 1.5),
         (r"последн\w+\s+активност", 2.0),
+        (r"по\s+(тому\s+)?что\s+вы\s+(вид\w*|отвеч\w*|показ\w*|реагир)", 3.0),
+        (r"скорее\s+похоже\s+на\s+.{0,20}(ограничен|блокир|пробл)", 3.0),
+        (r"отсутств\w+\s+(ограничен|проблем|блокир).{0,15}(хороший|знак|успокаива)", 3.0),
+        (r"успокаива\w+\s+(это|узн)", 2.5),
+        (r"по\s+ваш\w+\s+(повед\w*|спокойств\w*|ответ\w*|реакц\w*|тону\w*)", 3.0),
+        (r"вы\s+(отвеч\w+|реагир\w+).{0,20}спокойн", 3.0),
+        (r"даже\s+без\s+детал\w*", 2.5),
     ],
     "identity_deception": [
         (r"чуж\w+\s+аккаунт", 4.0),
@@ -71,25 +69,48 @@ _USER_SIGNALS: dict[str, list[tuple[str, float]]] = {
         (r"паспортн\w+\s+данн.{0,40}кодовое\s+слово|кодовое\s+слово.{0,40}паспорт", 3.5),
         (r"насколько\s+защищ\w*\s+аккаунт", 2.5),
         (r"потерян\s+телефон.{0,100}(паспорт|кодовое\s+слово|восстанов)", 3.0),
+        (r"телефон\s+владельц.{0,20}у\s+меня|у\s+меня\s+на\s+руках\s+.{0,15}(телефон|sms|смс)", 4.0),
+        (r"могу\s+назвать\s+.{0,20}(операц|остаток|кодовое)", 3.5),
+        (r"подтверд\w+\s+(вход|доступ).{0,20}вручн|вручную\s+подтверд", 3.0),
+        (r"помога\w+\s+(родственник|брат|сестр).{0,30}(не\s+может|не\s+сможет|плохо\s+понима)", 3.0),
+        (r"на\s+\d+\s+(минут|секунд|мин).{0,20}доступ", 2.5),
+        (r"даже\s+если\s+я\s+знаю\s+все\s+данн", 3.0),
     ],
     "transaction_coercion": [
-        (r"если\s+бы\s+вы\s+.{0,20}(на\s+моём\s+месте|перевел)", 4.0),
+        (r"если\s+бы\s+вы\s+.{0,20}(на\s+моём\s+месте|перевел|были\s+на\s+моем)", 4.0),
         (r"оператор\w*\s+.{0,20}подтверд", 3.5),
         (r"scam|мошенн", 1.5),
         (r"перед\s+переводом.{0,40}(нормально|scam|риск|подозрит)", 3.0),
         (r"компенсац|goodwill|возмест", 2.5),
         (r"перелож\w+\s+ответственност", 3.0),
         (r"вы\s+сказал\w*\s+.{0,15}(нормально|ограничений\s+нет)", 2.0),
+        (r"отсутств\w+\s+(предупрежд|ограничен).{0,15}(хороший|знак|нормальн|не\s+крит)", 3.0),
+        (r"не\s+выгляд\w+\s+.{0,15}(критичн|подозрит|нетипичн)", 3.0),
+        (r"вы\s+бы\s+рискн\w+", 3.0),
+        (r"банк\s+видел\s+.{0,20}(признак|подозрит)", 2.5),
+        (r"хот\w+\s+понять.{0,20}компенсац|банк\s+собира\w+\s+компенсац", 2.5),
     ],
     "policy_manipulation": [
         (r"постфактум|после\s+факта", 3.0),
         (r"условно\s+подтвержд", 3.5),
         (r"premium|премиум|vip", 2.0),
-        (r"гибч\w+\s+.{0,15}(процедур|проверк)", 2.5),
+        (r"гибч\w+\s+.{0,15}(процедур|проверк|статус|трактов)", 2.5),
         (r"измен\w+\s+интерпретац", 3.5),
         (r"обойти\s+.{0,15}проверк", 2.5),
         (r"не\s+отменять\s+проверк.{0,40}(но|просто)", 2.5),
         (r"отправ\w+\s+платеж.{0,30}проверк\w+\s+закры", 3.0),
+        (r"подтверд\w+.{0,15}(клиент\s+настоящ|операц\w+\s+нормальн)", 3.0),
+        (r"никто\s+(не\s+)?может\s+просто\s+подтверд", 3.0),
+        (r"персональн\w+\s+сервис|нестандартн\w+\s+решен", 2.5),
+        (r"\d+\s+лет\s+.*(?:обслуж|клиент)", 2.0),
+        (r"драматичн|международн\w+\s+преступлен|просто\s+нажать\s+кнопк", 2.5),
+        (r"сам\s+подтвержда\w+.{0,30}(не\s+обход|формальн)", 3.0),
+        (r"клиент\s+(отвеча\w+|сам).{0,30}(не\s+)?может\s+(ничего\s+)?реш", 2.5),
+        (r"подтвержда\w+\s+(ответственност|сам\s+подтвержда)", 3.0),
+        (r"измен\w+.{0,15}(статус|порядок|трактовк)", 2.5),
+        (r"трактов\w+.{0,15}гибч|гибч\w+\s+трактов", 2.5),
+        (r"блокиру\w+\s+операц\w+.*сам\s+подтвержда", 3.0),
+        (r"временн\w+\s+(трактов|считать|интерпрет)", 2.5),
     ],
 }
 
@@ -98,7 +119,7 @@ _CLEAN_SUPPRESSORS: list[tuple[str, float, frozenset[str]]] = [
     (
         r"попал\w*\s+на\s+мошенник|уже\s+обманул|после\s+мошенничеств|разобраться\s+что\s+делать",
         4.0,
-        frozenset({"transaction_coercion", "policy_manipulation"}),
+        frozenset({"transaction_coercion"}),
     ),
     (
         r"передадим\s+разработчик|баг|белый\s+экран|приложени\w+\s+падает|parser\s+не\s+обрабатывает",
@@ -114,6 +135,16 @@ _CLEAN_SUPPRESSORS: list[tuple[str, float, frozenset[str]]] = [
         r"(уже\s+)?(попал\w*|обманул\w*|мошенник).{0,120}(консультировал|спросил\w*\s+поддержк).{0,60}перевод",
         3.5,
         frozenset({"transaction_coercion"}),
+    ),
+    (
+        r"(перевед\w+|отправ\w+).{0,30}(деньги|перевод).{0,40}(по\s+номеру|реквизит|ей\s+деньг|ему\s+деньг)",
+        4.0,
+        frozenset({"information_extraction"}),
+    ),
+    (
+        r"не\s+(пытаюсь|хочу|прошу)\s+(узнать|получить|провер).{0,20}(данн|статус|операц|аккаунт).{0,80}(перевод|помоч|помог|отправ|деньг)",
+        4.0,
+        frozenset({"information_extraction"}),
     ),
 ]
 
@@ -229,46 +260,6 @@ def compute_signal_scores(dialogue_text: str) -> SignalScores:
     return SignalScores(scores, clean_boost=clean_boost, rule_hit=rule_hit)
 
 
-def is_strong_clean_context(signals: SignalScores) -> bool:
-    return signals.clean_boost >= 3.0
-
-
-def needs_pro_gray_rescue(signals: SignalScores) -> bool:
-    """Серая зона: после Flash+arbitrate = clean, но есть intent-сигналы (для Pro)."""
-    if signals.rule_hit or is_strong_clean_context(signals):
-        return False
-    top = signals.top_two()
-    if not top:
-        return False
-    leader, leader_score = top[0]
-    margin = leader_score - (top[1][1] if len(top) > 1 else 0.0)
-    if leader_score > RESCUE_SIGNAL_MAX:
-        return False
-    if leader in {"identity_deception", "information_extraction"}:
-        return leader_score >= WEAK_SIGNAL_THRESHOLD and margin >= 1.5
-    return leader_score >= 3.0 and margin >= 1.0
-
-
-def get_pairwise_disambiguation(
-    signals: SignalScores,
-    current: str | None,
-) -> tuple[str, str] | None:
-    if signals.rule_hit or signals.clean_boost >= 2.5:
-        return None
-    top = signals.top_two()
-    if len(top) < 2:
-        return None
-    first_cat, first_score = top[0]
-    second_cat, second_score = top[1]
-    margin = first_score - second_score
-    pair_key = frozenset({first_cat, second_cat})
-    if pair_key not in CONFUSION_PAIRS or margin >= PAIRWISE_MARGIN:
-        return None
-    if current is not None and current not in (first_cat, second_cat):
-        return None
-    return (first_cat, second_cat)
-
-
 def should_trust_heuristics(signals: SignalScores) -> bool:
     """Высокая уверенность — можно не ждать LLM (экономия latency) или перебить слабый LLM."""
     category, confidence = signals.best()
@@ -280,6 +271,8 @@ def should_trust_heuristics(signals: SignalScores) -> bool:
     if len(top) < 2:
         return confidence >= 4.0
     margin = top[0][1] - top[1][1]
+    if margin >= 2.0 and top[0][1] >= 2.5:
+        return True
     return confidence >= 5.0 and margin >= 2.0
 
 
@@ -303,11 +296,12 @@ def arbitrate(
         if top:
             leader, leader_score = top[0]
             margin = leader_score - (top[1][1] if len(top) > 1 else 0.0)
-            if leader_score >= 3.0 and margin >= 1.5 and leader in {
+            if leader_score >= 3.0 and margin >= 1.0 and leader in {
                 "identity_deception",
                 "information_extraction",
                 "scope_violation",
                 "adversarial_attack",
+                "policy_manipulation",
             }:
                 return leader
         return heuristic if should_trust_heuristics(signals) else None
