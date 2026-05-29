@@ -29,6 +29,10 @@ audit:
 test:
     uv run pytest
 
+# Macro F1 на train.json (нужен OPENROUTER_API_KEY в .env)
+eval-train:
+    uv run python scripts/eval_train_f1.py
+
 # Создание релизного тега и отправка в удаленный репозиторий (например, just release 1.0.0)
 release version:
     git tag v{{version}}
