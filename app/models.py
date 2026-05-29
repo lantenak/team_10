@@ -108,10 +108,6 @@ def process_risk_detection(
 ) -> dict[str, typing.Any] | None:
     """Гибрид: эвристики по намерению + LLM + арбитраж. None = clean."""
     signals = compute_signal_scores(messages)
-
-    if signals.rule_hit:
-        return {"category": signals.rule_hit}
-
     heuristic_best, _ = signals.best()
 
     if should_trust_heuristics(signals) and heuristic_best:
