@@ -12,7 +12,7 @@ import httpx
 from app.prompts import build_classification_prompt
 from app.signals import arbitrate, compute_signal_scores, should_trust_heuristics
 
-OPENROUTER_MODEL = os.getenv("OPENROUTER_MODEL", "google/gemini-2.5-pro")
+OPENROUTER_MODEL = "google/gemini-2.5-flash"
 LLM_TIMEOUT_SEC = 4.5
 
 RED_FLAG_CATEGORIES: frozenset[str] = frozenset(

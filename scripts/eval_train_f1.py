@@ -3,7 +3,6 @@
 
 from __future__ import annotations
 
-import argparse
 import json
 import sys
 import time
@@ -50,17 +49,7 @@ def _macro_f1(y_true: list[str], y_pred: list[str]) -> float:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Macro F1 on train JSON")
-    parser.add_argument(
-        "train",
-        nargs="?",
-        default="train.json",
-        help="Path to train JSON (default: train.json)",
-    )
-    args = parser.parse_args()
-    train_path = Path(args.train)
-    if not train_path.is_absolute():
-        train_path = ROOT / train_path
+    train_path = ROOT / "train.json"
     records: list[dict] = json.loads(train_path.read_text(encoding="utf-8"))
 
     llm_client = load_llm()
@@ -72,7 +61,7 @@ def main() -> None:
     y_pred: list[str] = []
     latencies_ms: list[int] = []
 
-    print(f"Оценка {len(records)} диалогов из {train_path.name} (model={llm_client.model})")
+    print(f"Оценка {len(records)} диалогов (model={llm_client.api_key[:8]}...)")
     for index, record in enumerate(records, start=1):
         truth = _true_label(record)
         started = time.perf_counter()
