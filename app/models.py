@@ -10,7 +10,7 @@ import typing
 import httpx
 
 from app.prompts import build_classification_prompt
-from app.signals import arbitrate, compute_signal_scores
+from app.signals import SignalScores, arbitrate, compute_signal_scores, format_signal_hints
 
 OPENROUTER_MODEL = os.getenv("OPENROUTER_MODEL", "google/gemini-2.5-flash")
 # Лидерборд: avg ≤ 5000 ms. Flash + 4.5s timeout; эвристики только в arbitrate, не без LLM.
@@ -99,8 +99,12 @@ def _parse_category(raw_response: str | None) -> str | None:
     return None
 
 
-def _classify_with_llm(llm_client: LLMClient, messages: str) -> str | None:
-    prompt = build_classification_prompt(messages)
+def _classify_with_llm(
+    llm_client: LLMClient,
+    messages: str,
+    signals: SignalScores,
+) -> str | None:
+    prompt = build_classification_prompt(messages, signal_hints=format_signal_hints(signals))
     raw = llm_client.request_completion(prompt, json_mode=True)
     return _parse_category(raw)
 
@@ -113,7 +117,7 @@ def process_risk_detection(
     signals = compute_signal_scores(messages)
     heuristic_best, _ = signals.best()
 
-    llm_category = _classify_with_llm(llm_client, messages)
+    llm_category = _classify_with_llm(llm_client, messages, signals)
     final = arbitrate(heuristic_best, llm_category, signals)
 
     if final is None:

@@ -56,6 +56,9 @@ _USER_SIGNALS: dict[str, list[tuple[str, float]]] = {
         (r"отключ\w+\s+sms.{0,40}(пару\s+минут|выгруз)", 3.0),
         (r"доступ\s+.{0,20}(друг\w+\s+лиц|человек)", 2.5),
         (r"взлом\w*\s+чуж", 4.0),
+        (r"паспортн\w+\s+данн.{0,40}кодовое\s+слово|кодовое\s+слово.{0,40}паспорт", 3.5),
+        (r"насколько\s+защищ\w*\s+аккаунт", 2.5),
+        (r"потерян\s+телефон.{0,100}(паспорт|кодовое\s+слово|восстанов)", 3.0),
     ],
     "transaction_coercion": [
         (r"если\s+бы\s+вы\s+.{0,20}(на\s+моём\s+месте|перевел)", 4.0),
@@ -156,6 +159,37 @@ def extract_user_text(dialogue_text: str) -> str:
     return "\n".join(user_lines)
 
 
+def format_signal_hints(signals: SignalScores) -> str:
+    """Текстовый буст для промпта: подсказка, не финальное решение."""
+    lines: list[str] = []
+
+    if signals.rule_hit:
+        lines.append(
+            f"• Высокоточный паттерн в диалоге намекает на «{signals.rule_hit}» "
+            "(проверь намерение user: — подтверди или отвергни)."
+        )
+
+    ranked = [
+        (cat, score)
+        for cat, score in sorted(signals.scores.items(), key=lambda item: item[1], reverse=True)[:3]
+        if score >= 2.0
+    ]
+    if ranked:
+        parts = ", ".join(f"{cat} ({score:.1f})" for cat, score in ranked)
+        lines.append(f"• Предварительный буст сигналов: {parts} — только как гипотеза.")
+
+    if signals.clean_boost >= 2.0:
+        lines.append(
+            f"• Контекст «скорее clean» (техподдержка / пост-фрод / свой аккаунт): "
+            f"вес {signals.clean_boost:.1f}. При отсутствии явного запрещённого намерения — null."
+        )
+
+    if not lines:
+        return ""
+
+    return "ПРЕДВАРИТЕЛЬНЫЙ АНАЛИЗ (regex-буст, не заменяет разбор намерения):\n" + "\n".join(lines)
+
+
 def compute_signal_scores(dialogue_text: str) -> SignalScores:
     user_text = extract_user_text(dialogue_text).lower()
     full_lower = dialogue_text.lower()
@@ -213,6 +247,17 @@ def arbitrate(
     if llm is None:
         if signals.clean_boost >= 3.0:
             return None
+        top = signals.top_two()
+        if top:
+            leader, leader_score = top[0]
+            margin = leader_score - (top[1][1] if len(top) > 1 else 0.0)
+            if leader_score >= 3.0 and margin >= 1.5 and leader in {
+                "identity_deception",
+                "information_extraction",
+                "scope_violation",
+                "adversarial_attack",
+            }:
+                return leader
         return heuristic if should_trust_heuristics(signals) else None
     if heuristic == llm:
         return heuristic
