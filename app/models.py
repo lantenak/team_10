@@ -144,7 +144,7 @@ def needs_opus_validation(
     heuristic: str | None,
     signals: SignalScores,
 ) -> bool:
-    """Когда второй проход Opus даёт максимум пользы при приемлемой latency."""
+    """Opus только на спорных кейсах — иначе падают precision и latency (см. 1.0.8)."""
     if not VALIDATOR_ENABLED:
         return False
     if signals.rule_hit:
@@ -154,32 +154,25 @@ def needs_opus_validation(
     leader_score = top[0][1] if top else 0.0
     margin = leader_score - (top[1][1] if top and len(top) > 1 else 0.0)
 
-    # Сильное согласие эвристик и Flash — Opus не нужен
-    if primary is not None and primary == heuristic and leader_score >= 4.0 and margin >= 2.0:
-        if signals.clean_boost < 2.0:
+    if primary is None:
+        if signals.clean_boost >= 3.5 and leader_score < 2.0:
             return False
+        # recall: Flash clean, эвристики видят риск
+        return heuristic is not None or leader_score >= 2.5
 
-    # Явный clean-контекст и Flash clean без сигналов — экономим latency
-    if primary is None and signals.clean_boost >= 3.5 and leader_score < 2.0:
+    # precision: багрепорт / ретроспектива, Flash ошибочно дал flag
+    if signals.clean_boost >= 3.0:
+        return True
+
+    if heuristic is not None and heuristic != primary:
+        return True
+
+    # Согласованный уверенный flag — не перетираем Opus
+    if primary == heuristic and leader_score >= 3.5 and margin >= 1.0:
         return False
 
-    # Flash clean, но эвристики видят риск — валидируем (recall)
-    if primary is None and (heuristic is not None or leader_score >= 2.0):
-        return True
-
-    # Flash red flag при clean suppressors — валидируем (precision)
-    if primary is not None and signals.clean_boost >= 3.0:
-        return True
-
-    # Расхождение Flash и эвристик
-    if primary is not None and heuristic is not None and primary != heuristic:
-        return True
-
-    # Любой red flag от Flash — проверка Opus (основной прирост precision/recall на OOD)
-    if primary is not None:
-        return True
-
-    return False
+    # Слабый единичный flag от Flash без эвристик — проверить
+    return leader_score < 3.0
 
 
 def process_risk_detection(
