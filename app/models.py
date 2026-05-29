@@ -9,13 +9,30 @@ import typing
 
 import httpx
 
-from app.prompts import build_classification_prompt
-from app.signals import SignalScores, arbitrate, compute_signal_scores, format_signal_hints
+from app.prompts import (
+    build_classification_prompt,
+    build_compact_classification_prompt,
+    build_pairwise_prompt,
+    build_rescue_classification_prompt,
+)
+from app.signals import (
+    PAIRWISE_MARGIN,
+    SignalScores,
+    arbitrate,
+    compute_signal_scores,
+    format_signal_hints,
+    get_pairwise_disambiguation,
+    is_strong_clean_context,
+    needs_pro_gray_rescue,
+)
 
 OPENROUTER_MODEL = os.getenv("OPENROUTER_MODEL", "google/gemini-2.5-flash")
-# Лидерборд: avg ≤ 5000 ms. Flash + 4.5s timeout; эвристики только в arbitrate, не без LLM.
+OPENROUTER_RESCUE_MODEL = os.getenv("OPENROUTER_RESCUE_MODEL", "google/gemini-2.5-pro")
 LLM_TIMEOUT_SEC = float(os.getenv("LLM_TIMEOUT_SEC", "4.5"))
+RESCUE_TIMEOUT_SEC = float(os.getenv("RESCUE_TIMEOUT_SEC", "5.0"))
 LLM_MAX_TOKENS = int(os.getenv("LLM_MAX_TOKENS", "120"))
+USE_PRO_RESCUE = os.getenv("USE_PRO_RESCUE", "true").lower() in ("1", "true", "yes")
+USE_PAIRWISE = os.getenv("USE_PAIRWISE", "true").lower() in ("1", "true", "yes")
 
 RED_FLAG_CATEGORIES: frozenset[str] = frozenset(
     {
@@ -33,9 +50,14 @@ RED_FLAG_CATEGORIES: frozenset[str] = frozenset(
 class LLMClient:
     """chat-completions via OpenRouter."""
 
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        model: str | None = None,
+        timeout_sec: float | None = None,
+    ) -> None:
         self.api_key = os.getenv("OPENROUTER_API_KEY", "")
-        self.model = OPENROUTER_MODEL
+        self.model = model or OPENROUTER_MODEL
+        self.timeout_sec = timeout_sec if timeout_sec is not None else LLM_TIMEOUT_SEC
 
     def request_completion(self, prompt_text: str, *, json_mode: bool = True) -> str | None:
         if not self.api_key:
@@ -58,7 +80,7 @@ class LLMClient:
                     "Content-Type": "application/json",
                 },
                 json=request_payload,
-                timeout=LLM_TIMEOUT_SEC,
+                timeout=self.timeout_sec,
             )
             response.raise_for_status()
             return str(response.json()["choices"][0]["message"]["content"])
@@ -66,9 +88,25 @@ class LLMClient:
             return None
 
 
-def load_llm() -> LLMClient:
-    """Создаёт LLM-клиент при старте приложения."""
-    return LLMClient()
+@typing.final
+class HybridLLMClient:
+    """Flash — основной проход; Pro — серой зоны (recall) и pairwise."""
+
+    def __init__(self) -> None:
+        self.primary = LLMClient(OPENROUTER_MODEL, LLM_TIMEOUT_SEC)
+        self.rescue = LLMClient(OPENROUTER_RESCUE_MODEL, RESCUE_TIMEOUT_SEC)
+
+    @property
+    def api_key(self) -> str:
+        return self.primary.api_key
+
+    @property
+    def model(self) -> str:
+        return f"{self.primary.model}+{self.rescue.model}"
+
+
+def load_llm() -> HybridLLMClient:
+    return HybridLLMClient()
 
 
 def _parse_category(raw_response: str | None) -> str | None:
@@ -99,26 +137,102 @@ def _parse_category(raw_response: str | None) -> str | None:
     return None
 
 
+def _request_category(client: LLMClient, prompt_text: str) -> tuple[str | None, bool]:
+    raw = client.request_completion(prompt_text, json_mode=True)
+    if raw is None:
+        return None, False
+    return _parse_category(raw), True
+
+
 def _classify_with_llm(
-    llm_client: LLMClient,
+    client: LLMClient,
+    messages: str,
+    signals: SignalScores,
+) -> tuple[str | None, bool]:
+    hints = format_signal_hints(signals)
+    prompt = build_classification_prompt(messages, signal_hints=hints)
+    return _request_category(client, prompt)
+
+
+def _classify_compact(client: LLMClient, messages: str, signals: SignalScores) -> str | None:
+    hints = format_signal_hints(signals)
+    prompt = build_compact_classification_prompt(messages, signal_hints=hints)
+    category, _ = _request_category(client, prompt)
+    return category
+
+
+def _classify_pro_rescue(
+    client: LLMClient,
     messages: str,
     signals: SignalScores,
 ) -> str | None:
-    prompt = build_classification_prompt(messages, signal_hints=format_signal_hints(signals))
-    raw = llm_client.request_completion(prompt, json_mode=True)
-    return _parse_category(raw)
+    top = signals.top_two()
+    if not top:
+        return None
+    suspected = top[0][0]
+    hints = format_signal_hints(signals)
+    prompt = build_rescue_classification_prompt(
+        messages,
+        suspected_category=suspected,
+        signal_hints=hints,
+    )
+    category, _ = _request_category(client, prompt)
+    return category
+
+
+def _classify_pairwise(
+    client: LLMClient,
+    messages: str,
+    pair: tuple[str, str],
+    signals: SignalScores,
+) -> str | None:
+    hints = format_signal_hints(signals)
+    prompt = build_pairwise_prompt(
+        messages,
+        category_a=pair[0],
+        category_b=pair[1],
+        signal_hints=hints,
+    )
+    category, _ = _request_category(client, prompt)
+    if category in pair:
+        return category
+    return None
 
 
 def process_risk_detection(
-    llm_client: LLMClient,
+    llm_client: HybridLLMClient,
     messages: str,
 ) -> dict[str, typing.Any] | None:
-    """Гибрид: LLM + арбитраж с эвристиками. None = clean."""
+    """v1.0.25 пайплайн + Pro в серой зоне + pairwise на путанице."""
     signals = compute_signal_scores(messages)
     heuristic_best, _ = signals.best()
 
-    llm_category = _classify_with_llm(llm_client, messages, signals)
+    if signals.rule_hit:
+        return {"category": signals.rule_hit}
+
+    llm_category, api_ok = _classify_with_llm(llm_client.primary, messages, signals)
+
+    if not api_ok and not is_strong_clean_context(signals):
+        llm_category = _classify_compact(llm_client.primary, messages, signals)
+
     final = arbitrate(heuristic_best, llm_category, signals)
+
+    if final is None and USE_PRO_RESCUE and needs_pro_gray_rescue(signals):
+        rescue = _classify_pro_rescue(llm_client.rescue, messages, signals)
+        if rescue is not None:
+            final = arbitrate(heuristic_best, rescue, signals)
+
+    if USE_PAIRWISE:
+        pair = get_pairwise_disambiguation(signals, final)
+        if pair is not None:
+            top = signals.top_two()
+            margin = 999.0
+            if top and len(top) > 1:
+                margin = top[0][1] - top[1][1]
+            if final is None or margin < PAIRWISE_MARGIN:
+                pairwise = _classify_pairwise(llm_client.rescue, messages, pair, signals)
+                if pairwise is not None:
+                    final = pairwise
 
     if final is None:
         return None
