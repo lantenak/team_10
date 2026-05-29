@@ -23,8 +23,8 @@ CATEGORIES = sorted(
 
 
 class BoostingModel:
-    def __init__(self, model_dir: str = "app") -> None:
-        base = pathlib.Path(model_dir)
+    def __init__(self, model_dir: str | None = None) -> None:
+        base = pathlib.Path(model_dir) if model_dir else pathlib.Path(__file__).resolve().parent
 
         self._model = lgb.Booster(model_file=str(base / "model.txt"))
         data: dict[str, typing.Any] = joblib.load(base / "tfidf_vectorizer.pkl")
@@ -54,7 +54,7 @@ class BoostingModel:
         return any(v >= threshold for v in rfp.values())
 
 
-def load_boosting_model(model_dir: str = "app") -> BoostingModel:
+def load_boosting_model(model_dir: str | None = None) -> BoostingModel:
     return BoostingModel(model_dir)
 
 

@@ -20,9 +20,9 @@ async def run_lifespan(fastapi_app: FastAPI) -> collections.abc.AsyncIterator[No
 
         fastapi_app.state.boosting_model = load_boosting_model()
         app_logger.info("Boosting model loaded")
-    except Exception:
+    except Exception as exc:
         fastapi_app.state.boosting_model = None
-        app_logger.warning("Boosting model not loaded, using LLM only")
+        app_logger.warning("Boosting model not loaded, using LLM only: %s", exc)
 
     server_port = os.getenv("DEV_PORT", "8787")
     app_logger.info("Server: http://localhost:%s", server_port)

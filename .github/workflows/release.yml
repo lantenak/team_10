@@ -80,11 +80,19 @@ jobs:
         env:
           SSH_HOST: ${{ secrets.SSH_HOST }}
         run: |
+          ready=0
           for i in $(seq 1 30); do
-            curl -sf "http://$SSH_HOST:8787/health" && break
+            if curl -sf "http://$SSH_HOST:8787/health"; then
+              ready=1
+              break
+            fi
             echo "Waiting for app to start... ($i/30)"
             sleep 2
           done
+          if [ "$ready" != "1" ]; then
+            echo "App health check failed after 60s"
+            exit 1
+          fi
 
       - name: notify evaluator
         env:

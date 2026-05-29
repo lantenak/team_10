@@ -7,7 +7,6 @@ import typing
 
 import httpx
 
-from app.boosting import BoostingModel, format_boosting_hint
 from app.prompts import build_classification_prompt
 
 OPENROUTER_MODEL = os.getenv("OPENROUTER_MODEL", "google/gemini-2.5-flash")
@@ -160,13 +159,15 @@ def _arbitrate(
 def process_risk_detection(
     llm_client: LLMClient,
     messages: str,
-    boosting_model: BoostingModel | None = None,
+    boosting_model: typing.Any | None = None,
 ) -> dict[str, typing.Any] | None:
     boost_hint = ""
     boost_cat = None
     boost_probs: dict[str, float] = {}
 
     if boosting_model is not None:
+        from app.boosting import format_boosting_hint
+
         boost_probs = boosting_model.predict(messages)
         boost_hint = format_boosting_hint(boost_probs)
         boost_cat, _ = boosting_model.top_category(messages)
