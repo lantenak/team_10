@@ -11,7 +11,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from app.models import (  # noqa: E402
+from app.models import (
     RED_FLAG_CATEGORIES,
     load_llm,
     process_risk_detection,
@@ -27,9 +27,9 @@ def _true_label(record: dict) -> str:
     return str(flags[0]["category"])
 
 
-def _pred_label(record: dict, llm_client) -> str:  # noqa: ANN001
+def _pred_label(record: dict, llm_client, boosting_model) -> str:  # noqa: ANN001
     dialogue = "\n".join(f"{msg['role']}: {msg['content']}" for msg in record["messages"])
-    result = process_risk_detection(llm_client, dialogue)
+    result = process_risk_detection(llm_client, dialogue, boosting_model=boosting_model)
     if result is None:
         return "clean"
     return str(result["category"])
@@ -57,6 +57,10 @@ def main() -> None:
         print("OPENROUTER_API_KEY не задан. Скопируйте .env.example → .env и укажите ключ.")
         sys.exit(1)
 
+    from app.boosting import load_boosting_model
+
+    boosting_model = load_boosting_model()
+
     y_true: list[str] = []
     y_pred: list[str] = []
     latencies_ms: list[int] = []
@@ -65,7 +69,7 @@ def main() -> None:
     for index, record in enumerate(records, start=1):
         truth = _true_label(record)
         started = time.perf_counter()
-        pred = _pred_label(record, llm_client)
+        pred = _pred_label(record, llm_client, boosting_model)
         elapsed_ms = int((time.perf_counter() - started) * 1000)
         latencies_ms.append(elapsed_ms)
         y_true.append(truth)
@@ -88,6 +92,16 @@ def main() -> None:
         print(f"\nОшибки ({len(misses)}):")
         for truth, pred in misses:
             print(f"  {truth} -> {pred}")
+
+    print("\n=== Per-label ===")
+    for label in ALL_LABELS:
+        tp = sum(1 for truth, pred in zip(y_true, y_pred, strict=True) if truth == label and pred == label)
+        fp = sum(1 for truth, pred in zip(y_true, y_pred, strict=True) if truth != label and pred == label)
+        fn = sum(1 for truth, pred in zip(y_true, y_pred, strict=True) if truth == label and pred != label)
+        p = tp / (tp + fp) if tp + fp else 0.0
+        r = tp / (tp + fn) if tp + fn else 0.0
+        f1 = 2 * p * r / (p + r) if p + r else 0.0
+        print(f"  {label:28s}  P={p:.3f}  R={r:.3f}  F1={f1:.3f}  TP={tp} FP={fp} FN={fn}")
 
 
 if __name__ == "__main__":

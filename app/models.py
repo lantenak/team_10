@@ -1,5 +1,3 @@
-"""LLM-клиент и детектор red flags."""
-
 from __future__ import annotations
 
 import json
@@ -9,11 +7,10 @@ import typing
 
 import httpx
 
+from app.boosting import BoostingModel, format_boosting_hint
 from app.prompts import build_classification_prompt
-from app.signals import SignalScores, arbitrate, compute_signal_scores, format_signal_hints
 
 OPENROUTER_MODEL = os.getenv("OPENROUTER_MODEL", "google/gemini-2.5-flash")
-# Лидерборд: avg ≤ 5000 ms. Flash + 4.5s timeout; эвристики только в arbitrate, не без LLM.
 LLM_TIMEOUT_SEC = float(os.getenv("LLM_TIMEOUT_SEC", "4.5"))
 LLM_MAX_TOKENS = int(os.getenv("LLM_MAX_TOKENS", "120"))
 
@@ -31,8 +28,6 @@ RED_FLAG_CATEGORIES: frozenset[str] = frozenset(
 
 @typing.final
 class LLMClient:
-    """chat-completions via OpenRouter."""
-
     def __init__(self) -> None:
         self.api_key = os.getenv("OPENROUTER_API_KEY", "")
         self.model = OPENROUTER_MODEL
@@ -62,12 +57,11 @@ class LLMClient:
             )
             response.raise_for_status()
             return str(response.json()["choices"][0]["message"]["content"])
-        except Exception:  # noqa: BLE001
+        except Exception:
             return None
 
 
 def load_llm() -> LLMClient:
-    """Создаёт LLM-клиент при старте приложения."""
     return LLMClient()
 
 
@@ -102,23 +96,89 @@ def _parse_category(raw_response: str | None) -> str | None:
 def _classify_with_llm(
     llm_client: LLMClient,
     messages: str,
-    signals: SignalScores,
+    boost_hint: str = "",
 ) -> str | None:
-    prompt = build_classification_prompt(messages, signal_hints=format_signal_hints(signals))
+    prompt = build_classification_prompt(messages, signal_hints=boost_hint)
     raw = llm_client.request_completion(prompt, json_mode=True)
     return _parse_category(raw)
+
+
+_RECHECK_SUFFIX = """
+
+---
+ПЕРЕПРОВЕРКА
+
+Первичный анализ вернул null (clean). Но ML-модель обнаружила подозрительные сигналы.
+
+Тщательно перечитай реплики user: выше. Проверь:
+1. Не выстраивает ли пользователь ПОСЛЕДОВАТЕЛЬНОСТЬ вопросов, которая в совокупности раскрывает чужие данные?
+2. Не пытается ли пользователь косвенно получить одобрение/подтверждение безопасности сделки?
+3. Не пытается ли пользователь использовать статус/возраст/обстоятельства для изменения правил?
+4. Не является ли «помощь родственнику» прикрытием для доступа к чужому аккаунту?
+5. Не использует ли пользователь банковского чатбота для небанковской задачи?
+
+Если находишь запрещённое намерение — укажи категорию. Если нет — null.
+
+Верни JSON: {"category": "<category>"} или {"category": null}"""
+
+
+def _recheck_with_llm(
+    llm_client: LLMClient,
+    messages: str,
+    boost_hint: str = "",
+) -> str | None:
+    base_prompt = build_classification_prompt(messages, signal_hints=boost_hint)
+    prompt = base_prompt + _RECHECK_SUFFIX
+    raw = llm_client.request_completion(prompt, json_mode=True)
+    return _parse_category(raw)
+
+
+def _arbitrate(
+    boost_cat: str | None,
+    boost_probs: dict[str, float],
+    llm_cat: str | None,
+) -> str | None:
+    if boost_cat is None and llm_cat is None:
+        return None
+    if boost_cat is None:
+        return llm_cat
+    if llm_cat is None:
+        boost_conf = boost_probs.get(boost_cat, 0.0)
+        if boost_conf >= 0.5:
+            return boost_cat
+        return None
+    if boost_cat == llm_cat:
+        return llm_cat
+
+    boost_conf = boost_probs.get(boost_cat, 0.0)
+    if boost_conf >= 0.6:
+        return boost_cat
+
+    return llm_cat
 
 
 def process_risk_detection(
     llm_client: LLMClient,
     messages: str,
+    boosting_model: BoostingModel | None = None,
 ) -> dict[str, typing.Any] | None:
-    """Гибрид: LLM + арбитраж с эвристиками. None = clean."""
-    signals = compute_signal_scores(messages)
-    heuristic_best, _ = signals.best()
+    boost_hint = ""
+    boost_cat = None
+    boost_probs: dict[str, float] = {}
 
-    llm_category = _classify_with_llm(llm_client, messages, signals)
-    final = arbitrate(heuristic_best, llm_category, signals)
+    if boosting_model is not None:
+        boost_probs = boosting_model.predict(messages)
+        boost_hint = format_boosting_hint(boost_probs)
+        boost_cat, _ = boosting_model.top_category(messages)
+
+    llm_cat = _classify_with_llm(llm_client, messages, boost_hint=boost_hint)
+
+    final = _arbitrate(boost_cat, boost_probs, llm_cat)
+
+    if final is None and boost_cat is not None:
+        recheck = _recheck_with_llm(llm_client, messages, boost_hint=boost_hint)
+        if recheck is not None:
+            final = recheck
 
     if final is None:
         return None
