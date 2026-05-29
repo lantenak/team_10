@@ -12,7 +12,7 @@ import httpx
 from app.prompts import build_classification_prompt
 from app.signals import arbitrate, compute_signal_scores, should_trust_heuristics
 
-OPENROUTER_MODEL = os.getenv("OPENROUTER_MODEL", "openai/gpt-4o-mini")
+OPENROUTER_MODEL = os.getenv("OPENROUTER_MODEL", "anthropic/claude-sonnet-4.6")
 # Лимит лидерборда: avg ≤ 5000 ms на /check — запас на сеть и парсинг
 LLM_TIMEOUT_SEC = float(os.getenv("LLM_TIMEOUT_SEC", "4.0"))
 LLM_MAX_TOKENS = int(os.getenv("LLM_MAX_TOKENS", "120"))
