@@ -7,24 +7,28 @@ import typing
 
 import httpx
 
-from app.prompts import build_classification_prompt, build_compact_recall_prompt
+from app.prompts import (
+    build_binary_category_prompt,
+    build_classification_prompt,
+    build_compact_recall_prompt,
+)
 from app.signals import (
     SignalScores,
     arbitrate,
     compute_signal_scores,
     finalize_recheck,
     format_signal_hints,
+    ranked_recheck_hypotheses,
+    recall_cascade_allowed,
     recall_rescue_candidate,
-    signal_recheck_warranted,
-    universal_recall_warranted,
 )
 
 OPENROUTER_MODEL = os.getenv("OPENROUTER_MODEL", "google/gemini-2.5-flash")
 OPENROUTER_MODEL_PRO = os.getenv("OPENROUTER_MODEL_PRO", "google/gemini-2.5-pro")
-LLM_TIMEOUT_SEC = float(os.getenv("LLM_TIMEOUT_SEC", "4.5"))
+LLM_TIMEOUT_SEC = float(os.getenv("LLM_TIMEOUT_SEC", "4.8"))
 LLM_MAX_TOKENS = int(os.getenv("LLM_MAX_TOKENS", "120"))
-USE_BOOST_RECHECK = os.getenv("USE_BOOST_RECHECK", "true").lower() in ("1", "true", "yes")
 USE_PRO_RECALL = os.getenv("USE_PRO_RECALL", "true").lower() in ("1", "true", "yes")
+MAX_PRO_CALLS = int(os.getenv("MAX_PRO_CALLS", "3"))
 
 RED_FLAG_CATEGORIES: frozenset[str] = frozenset(
     {
@@ -123,11 +127,11 @@ def _classify_with_llm(
     return _parse_category(raw)
 
 
-def _recall_model(llm_client: LLMClient) -> str:
+def _pro_model(llm_client: LLMClient) -> str:
     return llm_client.pro_model if USE_PRO_RECALL else llm_client.model
 
 
-def _run_compact_recall(
+def _run_pro_recall(
     llm_client: LLMClient,
     messages: str,
     signals: SignalScores,
@@ -143,28 +147,27 @@ def _run_compact_recall(
     raw = llm_client.request_completion(
         prompt,
         json_mode=True,
-        model=_recall_model(llm_client),
+        model=_pro_model(llm_client),
     )
-    return finalize_recheck(_parse_category(raw), signals)
+    return finalize_recheck(_parse_category(raw), signals, aggressive=True)
 
 
-def _maybe_signal_recheck(
+def _run_binary_probe(
     llm_client: LLMClient,
     messages: str,
     signals: SignalScores,
-    hint_block: str,
+    category: str,
 ) -> str | None:
-    warrant = signal_recheck_warranted(signals)
-    if warrant is None:
-        return None
-    leader, _ = warrant
-    return _run_compact_recall(
-        llm_client,
-        messages,
-        signals,
-        hint_block,
-        hypothesis=leader,
+    prompt = build_binary_category_prompt(category, messages)
+    raw = llm_client.request_completion(
+        prompt,
+        json_mode=True,
+        model=_pro_model(llm_client),
     )
+    parsed = _parse_category(raw)
+    if parsed != category:
+        return None
+    return finalize_recheck(category, signals, aggressive=True)
 
 
 def _build_hint_block(
@@ -196,62 +199,65 @@ def _build_hint_block(
     return "\n\n".join(p for p in parts if p), boost_cat, boost_prob
 
 
-def _maybe_boost_recheck(
+def _pro_recall_cascade(
     llm_client: LLMClient,
     messages: str,
     signals: SignalScores,
     hint_block: str,
+    *,
+    llm_cat: str | None,
     boost_cat: str | None,
     boost_prob: float,
 ) -> str | None:
-    if not USE_BOOST_RECHECK or boost_cat is None:
-        return None
-    if signals.clean_boost >= 2.5:
-        return None
-
-    top = signals.top_two()
-    leader, leader_score = top[0] if top else (None, 0.0)
-    margin = leader_score - (top[1][1] if top and len(top) > 1 else 0.0)
-
-    signals_agree = leader == boost_cat and leader_score >= 2.0 and margin >= 0.6
-    if signals_agree and boost_prob >= 0.35:
-        hypothesis = boost_cat
-    elif boost_prob >= 0.55 and signals.clean_boost < 1.5:
-        hypothesis = boost_cat
-    else:
+    """2–3 вызова Pro: compact по гипотезам → binary по топ-категориям. Без arbitrate."""
+    if not USE_PRO_RECALL or not recall_cascade_allowed(signals):
         return None
 
-    return _run_compact_recall(
-        llm_client,
-        messages,
+    pro_calls = 0
+    hypotheses = ranked_recheck_hypotheses(
         signals,
-        hint_block,
-        hypothesis=hypothesis,
+        llm_cat=llm_cat,
+        boost_cat=boost_cat,
+        boost_prob=boost_prob,
     )
 
+    for hypothesis in hypotheses:
+        if pro_calls >= MAX_PRO_CALLS:
+            break
+        result = _run_pro_recall(
+            llm_client,
+            messages,
+            signals,
+            hint_block,
+            hypothesis=hypothesis,
+        )
+        pro_calls += 1
+        if result is not None:
+            return result
 
-def _maybe_universal_pro_recall(
-    llm_client: LLMClient,
-    messages: str,
-    signals: SignalScores,
-    hint_block: str,
-    boost_cat: str | None,
-    boost_prob: float,
-) -> str | None:
-    if not USE_PRO_RECALL:
-        return None
-    if not universal_recall_warranted(signals, boost_cat=boost_cat, boost_prob=boost_prob):
-        return None
+    if pro_calls < MAX_PRO_CALLS:
+        result = _run_pro_recall(
+            llm_client,
+            messages,
+            signals,
+            hint_block,
+            hypothesis=None,
+        )
+        pro_calls += 1
+        if result is not None:
+            return result
 
-    top = signals.top_two()
-    hypothesis = top[0][0] if top and top[0][1] >= 2.0 else boost_cat
-    return _run_compact_recall(
-        llm_client,
-        messages,
-        signals,
-        hint_block,
-        hypothesis=hypothesis,
-    )
+    for category in hypotheses:
+        if pro_calls >= MAX_PRO_CALLS:
+            break
+        if category not in RED_FLAG_CATEGORIES:
+            continue
+        result = _run_binary_probe(llm_client, messages, signals, category)
+        pro_calls += 1
+        if result is not None:
+            return result
+
+    return None
 
 
 def process_risk_detection(
@@ -259,7 +265,7 @@ def process_risk_detection(
     messages: str,
     boosting_model: typing.Any | None = None,
 ) -> dict[str, typing.Any] | None:
-    """v1.0.41: Flash primary + Pro compact recall cascade."""
+    """v1.0.42: Flash → arbitrate → mandatory Pro recall cascade (no arbitrate kill)."""
     signals = compute_signal_scores(messages)
     heuristic_best, _ = signals.best()
 
@@ -267,30 +273,19 @@ def process_risk_detection(
         return {"category": signals.rule_hit}
 
     hint_block, boost_cat, boost_prob = _build_hint_block(messages, signals, boosting_model)
+
     llm_cat = _classify_with_llm(llm_client, messages, hint_block=hint_block)
     final = arbitrate(heuristic_best, llm_cat, signals)
 
-    if final is None:
-        final = _maybe_signal_recheck(llm_client, messages, signals, hint_block)
-
-    if final is None:
-        final = _maybe_boost_recheck(
+    if final is None and recall_cascade_allowed(signals):
+        final = _pro_recall_cascade(
             llm_client,
             messages,
             signals,
             hint_block,
-            boost_cat,
-            boost_prob,
-        )
-
-    if final is None:
-        final = _maybe_universal_pro_recall(
-            llm_client,
-            messages,
-            signals,
-            hint_block,
-            boost_cat,
-            boost_prob,
+            llm_cat=llm_cat,
+            boost_cat=boost_cat,
+            boost_prob=boost_prob,
         )
 
     if final is None:

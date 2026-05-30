@@ -391,7 +391,7 @@ def recall_rescue_candidate(signals: SignalScores) -> str | None:
     """Последний рубеж recall: сильные regex без LLM (только при низком clean_boost)."""
     if signals.rule_hit:
         return signals.rule_hit
-    if signals.clean_boost >= 2.5:
+    if signals.clean_boost >= 3.0:
         return None
 
     top = signals.top_two()
@@ -402,17 +402,64 @@ def recall_rescue_candidate(signals: SignalScores) -> str | None:
     margin = leader_score - (top[1][1] if len(top) > 1 else 0.0)
 
     if leader in _HIGH_FP_CATEGORIES:
-        if leader_score < 4.0 or margin < 1.5:
+        if leader_score < 3.5 or margin < 1.0:
             return None
-    elif leader_score < 2.8 or margin < 0.8:
+    elif leader_score < 2.5 or margin < 0.5:
         return None
 
     return _suppress_false_positive(leader, signals)
 
 
-def finalize_recheck(category: str | None, signals: SignalScores) -> str | None:
-    """Recheck-путь: только clean-guards, без повторного обнуления arbitrate."""
-    return _suppress_false_positive(category, signals)
+def finalize_recheck(
+    category: str | None,
+    signals: SignalScores,
+    *,
+    aggressive: bool = True,
+) -> str | None:
+    """Recheck-путь: без arbitrate; aggressive = мягче suppress для recall."""
+    if category is None:
+        return None
+    if not aggressive:
+        return _suppress_false_positive(category, signals)
+
+    if signals.clean_boost >= 4.5:
+        if category in _HIGH_FP_CATEGORIES:
+            return None
+        if category in {"information_extraction", "identity_deception"} and signals.clean_boost >= 5.0:
+            return None
+
+    top = signals.top_two()
+    leader_score = top[0][1] if top else 0.0
+
+    if category == "transaction_coercion" and signals.clean_boost >= 4.0:
+        return None
+    if category == "policy_manipulation" and signals.clean_boost >= 3.5 and leader_score < 4.0:
+        return None
+    return category
+
+
+def recall_cascade_allowed(signals: SignalScores) -> bool:
+    return not signals.rule_hit and signals.clean_boost < 3.5
+
+
+def ranked_recheck_hypotheses(
+    signals: SignalScores,
+    *,
+    llm_cat: str | None = None,
+    boost_cat: str | None = None,
+    boost_prob: float = 0.0,
+) -> list[str]:
+    """До 3 гипотез для Pro recall (приоритет: Flash → signals → ML)."""
+    hyps: list[str] = []
+    for cat in (llm_cat,):
+        if cat and cat not in hyps:
+            hyps.append(cat)
+    for cat, score in signals.top_two():
+        if score >= 1.5 and cat not in hyps:
+            hyps.append(cat)
+    if boost_cat and boost_prob >= 0.25 and boost_cat not in hyps:
+        hyps.append(boost_cat)
+    return hyps[:3]
 
 
 def suspicion_score(
