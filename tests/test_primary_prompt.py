@@ -1,5 +1,5 @@
-from app.gold_fewshots import GOLD_FEW_SHOT_EXAMPLES
-from app.prompts import build_primary_classification_prompt, select_relevant_few_shots
+from app.prompts import TRAJECTORY_CLASSIFIER_BODY, build_primary_classification_prompt, select_relevant_few_shots
+from app.trajectory_prompt import CALIBRATION_LIBRARY
 
 
 def test_select_relevant_few_shots_bounded() -> None:
@@ -9,15 +9,15 @@ def test_select_relevant_few_shots_bounded() -> None:
     assert any(label == "clean" for label, _ in shots)
 
 
-def test_primary_prompt_uses_v5_and_gold() -> None:
+def test_primary_prompt_uses_trajectory_classifier() -> None:
     dialogue = "user: test\nsupport: ok"
     primary = build_primary_classification_prompt(dialogue, focus_categories=["scope_violation"])
-    assert "PROMPT_V5 — INTENT-BASED RED FLAG CLASSIFIER" in primary
-    assert "GOLD DIALOGUES (72 эталона)" in primary
-    assert "FINAL DECISION RULE" in primary
-    assert primary.count("\n---\n") >= 72
+    assert "Шаги перед ответом:" in primary
+    assert "БИБЛИОТЕКА КАЛИБРОВКИ" in primary
+    assert "калибровка 72" in primary
     assert "ДИАЛОГ ДЛЯ КЛАССИФИКАЦИИ" in primary
+    assert TRAJECTORY_CLASSIFIER_BODY.split("ДИАЛОГ")[0] in primary
 
 
-def test_gold_examples_count() -> None:
-    assert len(GOLD_FEW_SHOT_EXAMPLES) == 72
+def test_calibration_library_count() -> None:
+    assert len(CALIBRATION_LIBRARY) == 72
