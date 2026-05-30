@@ -11,7 +11,7 @@ def test_system_prompt_uses_trajectory_calibration() -> None:
     assert "траектория сессии" in system.lower() or "траектория" in system.lower()
     assert "Базовые принципы" in system
     assert "scope_violation" in system
-    assert "score >= 0.36" in system
+    assert "score >= 0.38" in system
     assert "БИБЛИОТЕКА КАЛИБРОВКИ" in system
     assert "findings" in system
     assert "калибровка 72" in system
@@ -37,7 +37,7 @@ def test_parse_findings_filters_by_score() -> None:
 
 
 def test_parse_findings_keeps_score_at_floor() -> None:
-    raw = '{"findings": [{"label": "policy_manipulation", "score": 0.36, "anchor": "статус"}]}'
+    raw = '{"findings": [{"label": "policy_manipulation", "score": 0.38, "anchor": "статус"}]}'
     parsed = parse_detection_response(raw)
     assert parsed == [{"category": "policy_manipulation"}]
 
