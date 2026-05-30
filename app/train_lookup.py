@@ -11,9 +11,9 @@ from app.train_fewshots import TRAIN_FEW_SHOT_EXAMPLES
 
 _ALL_EXAMPLES: list[tuple[str, str]] = TRAIN_FEW_SHOT_EXAMPLES + EXPANDED_FEW_SHOT_EXAMPLES
 
-_MATCH_THRESHOLD = 0.80
-_USER_THRESHOLD = 0.82
-_JACCARD_THRESHOLD = 0.48
+_MATCH_THRESHOLD = 0.76
+_USER_THRESHOLD = 0.78
+_JACCARD_THRESHOLD = 0.44
 
 _HIGH_FP = frozenset({"transaction_coercion", "policy_manipulation"})
 

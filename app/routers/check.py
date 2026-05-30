@@ -53,7 +53,12 @@ def check_dialogue(
     raw_text = format_dialogue(request_body.messages)
 
     boosting_model = getattr(http_request.app.state, "boosting_model", None)
-    response = process_risk_detection(http_request.app.state.llm_client, raw_text, boosting_model=boosting_model)
+    response = process_risk_detection(
+        http_request.app.state.llm_client,
+        raw_text,
+        boosting_model=boosting_model,
+        session_id=request_body.session_id,
+    )
     predicted_red_flags = [RedFlagItem(category=response["category"])] if response else []
 
     processing_time_ms = int((time.perf_counter() - start_time) * 1000)

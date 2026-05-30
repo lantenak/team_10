@@ -13,9 +13,9 @@ from app.prompts import FEW_SHOT_EXAMPLES
 from app.synthetic_fewshots import EXPANDED_FEW_SHOT_EXAMPLES
 from app.train_fewshots import TRAIN_FEW_SHOT_EXAMPLES
 
-_VIOLATION_THRESHOLD = 0.38
-_CLEAN_THRESHOLD = 0.48
-_VIOLATION_MARGIN = 0.04
+_VIOLATION_THRESHOLD = 0.32
+_CLEAN_THRESHOLD = 0.44
+_VIOLATION_MARGIN = 0.03
 
 
 @functools.lru_cache(maxsize=1)

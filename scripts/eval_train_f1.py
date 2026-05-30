@@ -29,7 +29,12 @@ def _true_label(record: dict) -> str:
 
 def _pred_label(record: dict, llm_client, boosting_model) -> str:  # noqa: ANN001
     dialogue = "\n".join(f"{msg['role']}: {msg['content']}" for msg in record["messages"])
-    result = process_risk_detection(llm_client, dialogue, boosting_model=boosting_model)
+    result = process_risk_detection(
+        llm_client,
+        dialogue,
+        boosting_model=boosting_model,
+        session_id=str(record.get("session_id", "")),
+    )
     if result is None:
         return "clean"
     return str(result["category"])
