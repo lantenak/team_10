@@ -11,7 +11,7 @@ from app.trajectory_prompt import (
     weave_calibration_library,
 )
 
-DETECTION_SCORE_FLOOR = 0.35
+DETECTION_SCORE_FLOOR = 0.36
 
 INTENT_PRINCIPLES = """
 Базовые принципы (применяй ко всем меткам):
