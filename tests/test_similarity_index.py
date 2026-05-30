@@ -5,7 +5,7 @@ from app.similarity_index import match_similarity
 
 
 def test_similarity_matches_train_dialogues() -> None:
-    train_path = Path(__file__).resolve().parent.parent / "train.json"
+    train_path = Path(__file__).resolve().parent.parent / "app" / "data" / "train.json"
     records = json.loads(train_path.read_text(encoding="utf-8"))
     hits = 0
     for record in records:

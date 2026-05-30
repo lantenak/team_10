@@ -44,7 +44,7 @@ def format_dialogue(record: dict) -> str:
 
 
 def main() -> None:
-    train_path = ROOT / "train.json"
+    train_path = ROOT / "app" / "data" / "train.json"
     records: list[dict] = json.loads(train_path.read_text(encoding="utf-8"))
 
     dialogues = [format_dialogue(r) for r in records]

@@ -29,3 +29,7 @@ Thumbs.db
 .pytest_cache/
 .ruff_cache/
 .mypy_cache/
+
+# Local copies (canonical dataset: app/data/train.json)
+/train.json
+*.pdf

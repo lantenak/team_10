@@ -54,7 +54,7 @@ def _macro_f1(y_true: list[str], y_pred: list[str]) -> float:
 
 
 def main() -> None:
-    train_path = ROOT / "train.json"
+    train_path = ROOT / "app" / "data" / "train.json"
     records: list[dict] = json.loads(train_path.read_text(encoding="utf-8"))
 
     llm_client = load_llm()

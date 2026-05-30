@@ -5,7 +5,7 @@ from app.train_lookup import match_train_example
 
 
 def test_train_lookup_exact_matches() -> None:
-    train_path = Path(__file__).resolve().parent.parent / "train.json"
+    train_path = Path(__file__).resolve().parent.parent / "app" / "data" / "train.json"
     records = json.loads(train_path.read_text(encoding="utf-8"))
 
     for record in records:
