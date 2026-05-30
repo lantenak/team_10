@@ -59,16 +59,12 @@ jobs:
             docker stop app || true
             docker rm app || true
             docker images --filter "reference=$IMAGE" --format "{{.Repository}}:{{.Tag}}" | xargs -r docker rmi -f || true
-            mkdir -p /root/team10_lb_logs
             docker pull $IMAGE:$VERSION
             docker run -d \
               --name app \
               --restart unless-stopped \
               -p 8787:8000 \
               -e OPENROUTER_API_KEY="$OPENROUTER_API_KEY" \
-              -e DEBUG_LOG_CHECKS=true \
-              -e DEBUG_LOG_PATH=/app/logs/check_requests.jsonl \
-              -v /root/team10_lb_logs:/app/logs \
               $IMAGE:$VERSION
               # HF-режим: добавьте `-v model_cache:/app/model_cache \` для кеша локальной модели
         env:

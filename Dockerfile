@@ -36,8 +36,6 @@ RUN groupadd --system app \
 
 WORKDIR /app
 
-RUN mkdir -p /app/logs && chown app:app /app/logs
-
 COPY --from=builder --chown=app:app /app/.venv /app/.venv
 COPY --chown=app:app app ./app
 
