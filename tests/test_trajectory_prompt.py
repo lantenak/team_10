@@ -7,7 +7,7 @@ from app.trajectory_prompt import (
 
 
 def test_calibration_library_size() -> None:
-    assert len(CALIBRATION_LIBRARY) == 72
+    assert len(CALIBRATION_LIBRARY) == 100
     assert isinstance(CALIBRATION_LIBRARY[0], TrajectorySample)
 
 
@@ -24,4 +24,4 @@ def test_weave_uses_trajectory_layout_not_category_blocks() -> None:
 def test_full_prompt_has_preamble_and_library() -> None:
     prompt = assemble_trajectory_classifier_prompt()
     assert "Калибровочные сессии" in prompt
-    assert "калибровка 72" in prompt
+    assert "калибровка 100" in prompt
