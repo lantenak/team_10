@@ -410,9 +410,40 @@ def recall_rescue_candidate(signals: SignalScores) -> str | None:
     return _suppress_false_positive(leader, signals)
 
 
+def finalize_recheck(category: str | None, signals: SignalScores) -> str | None:
+    """Recheck-путь: только clean-guards, без повторного обнуления arbitrate."""
+    return _suppress_false_positive(category, signals)
+
+
+def suspicion_score(
+    signals: SignalScores,
+    *,
+    boost_cat: str | None = None,
+    boost_prob: float = 0.0,
+) -> float:
+    """Насколько диалог подозрителен (для universal Pro recall)."""
+    top = signals.top_two()
+    signal_peak = top[0][1] if top else 0.0
+    boost_part = boost_prob * 4.0 if boost_cat else 0.0
+    return max(signal_peak, boost_part) - signals.clean_boost * 0.25
+
+
+def universal_recall_warranted(
+    signals: SignalScores,
+    *,
+    boost_cat: str | None = None,
+    boost_prob: float = 0.0,
+) -> bool:
+    if signals.rule_hit:
+        return False
+    if signals.clean_boost >= 3.5:
+        return False
+    return suspicion_score(signals, boost_cat=boost_cat, boost_prob=boost_prob) >= 2.0
+
+
 def signal_recheck_warranted(signals: SignalScores) -> tuple[str, float] | None:
     """Нужен второй LLM-вызов для recall (сигналы есть, clean-контекст слабый)."""
-    if signals.rule_hit or signals.clean_boost >= 2.5:
+    if signals.rule_hit or signals.clean_boost >= 3.0:
         return None
 
     top = signals.top_two()
@@ -423,9 +454,9 @@ def signal_recheck_warranted(signals: SignalScores) -> tuple[str, float] | None:
     margin = leader_score - (top[1][1] if len(top) > 1 else 0.0)
 
     if leader in _HIGH_FP_CATEGORIES:
-        if leader_score < 3.5 or margin < 1.2:
+        if leader_score < 3.0 or margin < 1.0:
             return None
-    elif leader_score < 2.8 or margin < 0.8:
+    elif leader_score < 2.5 or margin < 0.6:
         return None
 
     return leader, leader_score
