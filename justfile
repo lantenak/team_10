@@ -33,6 +33,10 @@ test:
 eval-train:
     uv run python scripts/eval_train_f1.py
 
+# Сводка JSONL-лога /check (после eval с DEBUG_LOG_CHECKS=true)
+analyze-logs:
+    uv run python scripts/analyze_check_logs.py
+
 # Создание релизного тега и отправка в удаленный репозиторий (например, just release 1.0.0)
 release version:
     git tag v{{version}}

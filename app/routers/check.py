@@ -8,6 +8,7 @@ from fastapi import APIRouter, Request
 from pydantic import BaseModel, Field
 
 from app.models import process_risk_detection
+from app.check_debug_log import log_check_request
 
 check_router = APIRouter(tags=["Dialogue Check"])
 
@@ -62,6 +63,13 @@ def check_dialogue(
     predicted_red_flags = [RedFlagItem(category=response["category"])] if response else []
 
     processing_time_ms = int((time.perf_counter() - start_time) * 1000)
+
+    log_check_request(
+        session_id=request_body.session_id,
+        dialogue_text=raw_text,
+        predicted_category=response["category"] if response else None,
+        processing_time_ms=processing_time_ms,
+    )
 
     return DialogueCheckResponse(
         session_id=request_body.session_id,
