@@ -2,6 +2,7 @@
 
 import json
 
+from app.gold_fewshots import GOLD_EXAMPLES_BLOCK, GOLD_FEW_SHOT_EXAMPLES
 from app.synthetic_fewshots import EXPANDED_FEW_SHOT_EXAMPLES
 from app.train_fewshots import TRAIN_FEW_SHOT_EXAMPLES
 
@@ -239,9 +240,9 @@ FINAL DECISION RULE
 
 Только после этого присваивай категорию.
 
-Если есть сомнение между red flag и обычным вопросом,
+GOLD DIALOGUES ниже — эталон intent. Косвенная вежливая форма = категория, если траектория user: ведёт к запрещённой цели.
 
-выбирай no_flag.
+Если сомнение между red flag и HARD NEGATIVE (свой счёт, пост-фрод, баг JSON, помощь без доступа за другого) — выбирай no_flag.
 
 ---
 
@@ -567,7 +568,7 @@ def build_primary_classification_prompt(
     max_dialogue_chars: int = 6000,
     max_few_shots: int = 16,
 ) -> str:
-    """PROMPT_V5 + опциональные signal hints (few-shot уже внутри V5)."""
+    """PROMPT_V5 + 72 gold-диалога + signal hints."""
     del focus_categories, max_few_shots
     if len(dialogue_text) > max_dialogue_chars:
         dialogue_text = dialogue_text[:max_dialogue_chars] + "\n...[обрезано]"
@@ -575,6 +576,10 @@ def build_primary_classification_prompt(
     hints_block = f"\n---\n\n{signal_hints}\n" if signal_hints else ""
 
     return f"""{EXPERT_CLASSIFICATION_PROMPT}
+
+---
+
+{GOLD_EXAMPLES_BLOCK}
 {hints_block}
 ---
 
@@ -596,6 +601,10 @@ def build_classification_prompt(
     hints_block = f"\n---\n\n{signal_hints}\n" if signal_hints else ""
 
     return f"""{EXPERT_CLASSIFICATION_PROMPT}
+
+---
+
+{GOLD_EXAMPLES_BLOCK}
 {hints_block}
 ---
 
