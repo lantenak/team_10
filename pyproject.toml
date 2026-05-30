@@ -7,9 +7,6 @@ dependencies = [
     "fastapi==0.128.0",
     "uvicorn[standard]==0.40.0",
     "httpx>=0.28.1",
-    "lightgbm>=4.5.0",
-    "scikit-learn>=1.5.0",
-    "joblib>=1.4.0",
 ]
 
 [dependency-groups]
@@ -51,10 +48,8 @@ ignore = [
 "app/routers/*.py" = ["B008"]
 "app/main.py" = ["B008", "RUF001", "PLC0415", "BLE001"]
 "app/models.py" = ["ERA001", "PLR0911", "BLE001", "PLR2004", "RUF001"]
-"app/boosting.py" = ["PLR2004", "RUF001"]
-"app/prompts.py" = ["RUF001", "RUF002", "RUF003", "E501"]
-"app/features.py" = ["RUF001"]
-"app/signals.py" = ["RUF001", "RUF002", "RUF003", "C901", "PLR0911", "PLR0912", "PLR2004", "C420", "RUF023"]
+"app/session_classifier.py" = ["RUF001", "RUF002", "E501"]
+"app/trajectory_prompt.py" = ["RUF001", "RUF002", "E501"]
 "tests/**/*.py" = ["S101", "ANN", "D"]
 
 [tool.ruff.lint.isort]
@@ -68,7 +63,7 @@ show_error_codes = true
 pretty = true
 
 [[tool.mypy.overrides]]
-module = ["torch.*", "transformers.*", "lightgbm.*", "sklearn.*", "joblib.*"]
+module = ["torch.*", "transformers.*"]
 ignore_missing_imports = true
 
 [tool.flake8]

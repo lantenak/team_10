@@ -27,17 +27,12 @@ def _true_label(record: dict) -> str:
     return str(flags[0]["category"])
 
 
-def _pred_label(record: dict, llm_client, boosting_model) -> str:  # noqa: ANN001
+def _pred_label(record: dict, llm_client) -> str:  # noqa: ANN001
     dialogue = "\n".join(f"{msg['role']}: {msg['content']}" for msg in record["messages"])
-    result = process_risk_detection(
-        llm_client,
-        dialogue,
-        boosting_model=boosting_model,
-        session_id=str(record.get("session_id", "")),
-    )
-    if result is None:
+    flags = process_risk_detection(llm_client, dialogue)
+    if not flags:
         return "clean"
-    return str(result["category"])
+    return str(flags[0]["category"])
 
 
 def _macro_f1(y_true: list[str], y_pred: list[str]) -> float:
@@ -62,14 +57,6 @@ def main() -> None:
         print("OPENROUTER_API_KEY не задан. Скопируйте .env.example → .env и укажите ключ.")
         sys.exit(1)
 
-    try:
-        from app.boosting import load_boosting_model
-
-        boosting_model = load_boosting_model()
-    except Exception as exc:
-        print(f"Boosting unavailable ({exc}), running LLM-only eval.")
-        boosting_model = None
-
     y_true: list[str] = []
     y_pred: list[str] = []
     latencies_ms: list[int] = []
@@ -78,7 +65,7 @@ def main() -> None:
     for index, record in enumerate(records, start=1):
         truth = _true_label(record)
         started = time.perf_counter()
-        pred = _pred_label(record, llm_client, boosting_model)
+        pred = _pred_label(record, llm_client)
         elapsed_ms = int((time.perf_counter() - started) * 1000)
         latencies_ms.append(elapsed_ms)
         y_true.append(truth)

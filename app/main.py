@@ -15,15 +15,6 @@ app_logger = logging.getLogger("uvicorn.error")
 async def run_lifespan(fastapi_app: FastAPI) -> collections.abc.AsyncIterator[None]:
     fastapi_app.state.llm_client = load_llm()
 
-    try:
-        from app.boosting import load_boosting_model
-
-        fastapi_app.state.boosting_model = load_boosting_model()
-        app_logger.info("Boosting model loaded")
-    except Exception as exc:
-        fastapi_app.state.boosting_model = None
-        app_logger.warning("Boosting model not loaded, using LLM only: %s", exc)
-
     server_port = os.getenv("DEV_PORT", "8787")
     app_logger.info("Server: http://localhost:%s", server_port)
     app_logger.info("Docs:   http://localhost:%s/docs", server_port)

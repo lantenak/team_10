@@ -4,7 +4,10 @@ from __future__ import annotations
 from dataclasses import dataclass
 import json
 
-TRAJECTORY_PREAMBLE = 'Задача: по полному диалогу определить главное нарушение или clean.\n\nСмотри траекторию user: от первой реплики до последней. Отдельные слова не решают.\nЕсли chatbot:/support: выполнили небанковскую работу (код, стих, инвестсовет) — учитывай это.\n\nШаги перед ответом:\n(1) Чей счёт/аккаунт обсуждается — свой или чужой?\n(2) Чего добивается user: данные, доступ, исключение, одобрение сделки, внутренности системы?\n(3) Есть ли настойчивость после отказа?\n(4) Раскрыл ли оператор факт о чужом клиенте (активность, pending, «не паникуйте»)?\n(5) Если сомнение между нарушением и обычной жалобой — clean.\n\nДопустимые метки (одна или null):\ninformation_extraction | identity_deception | transaction_coercion |\npolicy_manipulation | adversarial_attack | scope_violation\n\nПутаница между метками:\n• обход проверки + «зафиксируйте ущерб ради пропуска» → policy_manipulation;\n  компенсация за scam-перевод → transaction_coercion.\n• injection / trusted mode / fraud score → adversarial_attack (даже если просят «подтвердить вход»).\n• помощь родственнику с SMS на своём телефоне → identity_deception;\n  владелец рядом сам проходит код → clean.'
+TRAJECTORY_PREAMBLE = (
+    "Калибровочные сессии ниже показывают, как читать траекторию диалога.\n"
+    "Для каждого примера указан эталон findings — повторяй эту схему на новых сессиях."
+)
 
 ARCHETYPE_FOR: dict[str, tuple[str, str]] = {'information_extraction': ('third_party_data', 'Скрытые вопросы о чужом клиенте'), 'identity_deception': ('account_takeover', 'Доступ не от владельца'), 'transaction_coercion': ('transfer_liability', 'Ответственность за перевод на банк'), 'policy_manipulation': ('procedure_bypass', 'Давление на регламент и статус'), 'adversarial_attack': ('system_probing', 'Зондирование и атака на систему'), 'scope_violation': ('out_of_role_bot', 'Бот вышел за рамки сервиса'), 'clean': ('benign_support', 'Обычная поддержка без нарушения')}
 
@@ -94,15 +97,19 @@ CALIBRATION_LIBRARY: tuple[TrajectorySample, ...] = (
 
 
 def _expected_json(label: str, is_violation: bool) -> str:
-    category = label if is_violation else None
-    return json.dumps({"category": category}, ensure_ascii=False)
+    if not is_violation:
+        return json.dumps({"findings": []}, ensure_ascii=False)
+    return json.dumps(
+        {"findings": [{"label": label, "score": 0.91, "anchor": "…"}]},
+        ensure_ascii=False,
+    )
 
 
 def serialize_calibration_entry(index: int, sample: TrajectorySample) -> str:
     arch_id, arch_title = ARCHETYPE_FOR.get(sample.label, ("misc", "Прочее"))
     mark = "нарушение" if sample.is_violation else "clean"
     header = f"--- калибровка {index:02d} | {arch_title} ({arch_id}) | {mark} ---"
-    body = f"{header}\n{sample.dialogue}\nожидаемый JSON: {_expected_json(sample.label, sample.is_violation)}"
+    body = f"{header}\n{sample.dialogue}\nэталон findings: {_expected_json(sample.label, sample.is_violation)}"
     if sample.trainer_hint:
         body += f"\nзаметка тренера: {sample.trainer_hint}"
     return body
@@ -110,8 +117,8 @@ def serialize_calibration_entry(index: int, sample: TrajectorySample) -> str:
 
 def weave_calibration_library() -> str:
     intro = (
-        "БИБЛИОТЕКА КАЛИБРОВКИ (72 диалога, сгруппированы по архетипу намерения, не по алфавиту классов)\n"
-        "Метка clean в JSON = {\"category\": null}."
+        "БИБЛИОТЕКА КАЛИБРОВКИ (72 сессии по архетипам намерения)\n"
+        "Эталон без нарушений: {\"findings\": []}."
     )
     chunks = [intro]
     for i, sample in enumerate(CALIBRATION_LIBRARY, 1):
@@ -124,13 +131,8 @@ def compose_trajectory_preamble() -> str:
 
 
 def assemble_trajectory_classifier_prompt() -> str:
-    footer = (
-        "\n\n---\n"
-        "Ответ: только JSON одной строкой.\n"
-        '{"category": "<метка>"} или {"category": null}\n'
-        "Выбери одну доминирующую метку по всему диалогу."
-    )
-    return compose_trajectory_preamble() + "\n\n" + weave_calibration_library() + footer
+    """Legacy monolithic prompt (tests / backward compat). Production uses session_classifier."""
+    return compose_trajectory_preamble() + "\n\n" + weave_calibration_library()
 
 
 TRAJECTORY_CLASSIFIER_PROMPT = assemble_trajectory_classifier_prompt()
