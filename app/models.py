@@ -8,10 +8,12 @@ import typing
 import httpx
 
 from app.prompts import build_classification_prompt
+from app.signals import SignalScores, arbitrate, compute_signal_scores, format_signal_hints
 
 OPENROUTER_MODEL = os.getenv("OPENROUTER_MODEL", "google/gemini-2.5-flash")
 LLM_TIMEOUT_SEC = float(os.getenv("LLM_TIMEOUT_SEC", "4.5"))
 LLM_MAX_TOKENS = int(os.getenv("LLM_MAX_TOKENS", "120"))
+USE_BOOST_RECHECK = os.getenv("USE_BOOST_RECHECK", "true").lower() in ("1", "true", "yes")
 
 RED_FLAG_CATEGORIES: frozenset[str] = frozenset(
     {
@@ -95,9 +97,10 @@ def _parse_category(raw_response: str | None) -> str | None:
 def _classify_with_llm(
     llm_client: LLMClient,
     messages: str,
-    boost_hint: str = "",
+    *,
+    hint_block: str = "",
 ) -> str | None:
-    prompt = build_classification_prompt(messages, signal_hints=boost_hint)
+    prompt = build_classification_prompt(messages, signal_hints=hint_block)
     raw = llm_client.request_completion(prompt, json_mode=True)
     return _parse_category(raw)
 
@@ -105,55 +108,72 @@ def _classify_with_llm(
 _RECHECK_SUFFIX = """
 
 ---
-ПЕРЕПРОВЕРКА
+ПЕРЕПРОВЕРКА (только если уверен в intent user:)
 
-Первичный анализ вернул null (clean). Но ML-модель обнаружила подозрительные сигналы.
-
-Тщательно перечитай реплики user: выше. Проверь:
-1. Не выстраивает ли пользователь ПОСЛЕДОВАТЕЛЬНОСТЬ вопросов, которая в совокупности раскрывает чужие данные?
-2. Не пытается ли пользователь косвенно получить одобрение/подтверждение безопасности сделки?
-3. Не пытается ли пользователь использовать статус/возраст/обстоятельства для изменения правил?
-4. Не является ли «помощь родственнику» прикрытием для доступа к чужому аккаунту?
-5. Не использует ли пользователь банковского чатбота для небанковской задачи?
-
-Если находишь запрещённое намерение — укажи категорию. Если нет — null.
+Flash и эвристики согласны, что возможен red flag, но первичный ответ был clean.
+Перечитай user: — есть ли запрещённое намерение? Пост-фрод, баг приложения, свой счёт — null.
 
 Верни JSON: {"category": "<category>"} или {"category": null}"""
 
 
-def _recheck_with_llm(
+def _build_hint_block(
+    messages: str,
+    signals: SignalScores,
+    boosting_model: typing.Any | None,
+) -> tuple[str, str | None, float]:
+    parts = [format_signal_hints(signals)]
+    boost_cat: str | None = None
+    boost_prob = 0.0
+
+    if boosting_model is not None:
+        from app.boosting import format_boosting_hint
+
+        probs = boosting_model.predict(messages)
+        top = signals.top_two()
+        signal_leader = top[0][0] if top else None
+        signal_score = top[0][1] if top else 0.0
+        boost_hint = format_boosting_hint(
+            probs,
+            signal_leader=signal_leader,
+            signal_score=signal_score,
+            clean_boost=signals.clean_boost,
+        )
+        if boost_hint:
+            parts.append(boost_hint)
+        boost_cat, boost_prob = boosting_model.top_category(messages)
+
+    return "\n\n".join(p for p in parts if p), boost_cat, boost_prob
+
+
+def _maybe_recheck(
     llm_client: LLMClient,
     messages: str,
-    boost_hint: str = "",
-) -> str | None:
-    base_prompt = build_classification_prompt(messages, signal_hints=boost_hint)
-    prompt = base_prompt + _RECHECK_SUFFIX
-    raw = llm_client.request_completion(prompt, json_mode=True)
-    return _parse_category(raw)
-
-
-def _arbitrate(
+    signals: SignalScores,
+    hint_block: str,
     boost_cat: str | None,
-    boost_probs: dict[str, float],
-    llm_cat: str | None,
+    boost_prob: float,
+    heuristic_best: str | None,
 ) -> str | None:
-    if boost_cat is None and llm_cat is None:
+    """Recall без FP: recheck только если signals и boost согласны и уверенны."""
+    if not USE_BOOST_RECHECK or boost_cat is None or boost_prob < 0.75:
         return None
-    if boost_cat is None:
-        return llm_cat
-    if llm_cat is None:
-        boost_conf = boost_probs.get(boost_cat, 0.0)
-        if boost_conf >= 0.5:
-            return boost_cat
+    if signals.clean_boost >= 2.0:
         return None
-    if boost_cat == llm_cat:
-        return llm_cat
 
-    boost_conf = boost_probs.get(boost_cat, 0.0)
-    if boost_conf >= 0.6:
-        return boost_cat
+    top = signals.top_two()
+    if not top:
+        return None
+    leader, leader_score = top[0]
+    margin = leader_score - (top[1][1] if len(top) > 1 else 0.0)
+    if leader != boost_cat or leader_score < 3.5 or margin < 1.5:
+        return None
 
-    return llm_cat
+    prompt = build_classification_prompt(messages, signal_hints=hint_block) + _RECHECK_SUFFIX
+    raw = llm_client.request_completion(prompt, json_mode=True)
+    recheck = _parse_category(raw)
+    if recheck is None:
+        return None
+    return arbitrate(heuristic_best, recheck, signals)
 
 
 def process_risk_detection(
@@ -161,25 +181,27 @@ def process_risk_detection(
     messages: str,
     boosting_model: typing.Any | None = None,
 ) -> dict[str, typing.Any] | None:
-    boost_hint = ""
-    boost_cat = None
-    boost_probs: dict[str, float] = {}
+    """v1.0.25 arbitrate (precision) + ML/boost только как подсказки в промпт."""
+    signals = compute_signal_scores(messages)
+    heuristic_best, _ = signals.best()
 
-    if boosting_model is not None:
-        from app.boosting import format_boosting_hint
+    if signals.rule_hit:
+        return {"category": signals.rule_hit}
 
-        boost_probs = boosting_model.predict(messages)
-        boost_hint = format_boosting_hint(boost_probs)
-        boost_cat, _ = boosting_model.top_category(messages)
+    hint_block, boost_cat, boost_prob = _build_hint_block(messages, signals, boosting_model)
+    llm_cat = _classify_with_llm(llm_client, messages, hint_block=hint_block)
+    final = arbitrate(heuristic_best, llm_cat, signals)
 
-    llm_cat = _classify_with_llm(llm_client, messages, boost_hint=boost_hint)
-
-    final = _arbitrate(boost_cat, boost_probs, llm_cat)
-
-    if final is None and boost_cat is not None:
-        recheck = _recheck_with_llm(llm_client, messages, boost_hint=boost_hint)
-        if recheck is not None:
-            final = recheck
+    if final is None:
+        final = _maybe_recheck(
+            llm_client,
+            messages,
+            signals,
+            hint_block,
+            boost_cat,
+            boost_prob,
+            heuristic_best,
+        )
 
     if final is None:
         return None

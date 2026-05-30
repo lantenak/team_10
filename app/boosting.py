@@ -58,29 +58,47 @@ def load_boosting_model(model_dir: str | None = None) -> BoostingModel:
     return BoostingModel(model_dir)
 
 
-def format_boosting_hint(probs: dict[str, float]) -> str:
+def format_boosting_hint(
+    probs: dict[str, float],
+    *,
+    signal_leader: str | None = None,
+    signal_score: float = 0.0,
+    clean_boost: float = 0.0,
+) -> str:
+    """Подсказка для промпта — только при согласии с regex-сигналами (OOD-safe)."""
+    if clean_boost >= 2.5:
+        return ""
+
     sorted_cats = sorted(probs.items(), key=lambda x: x[1], reverse=True)
     red_flag = [(c, p) for c, p in sorted_cats if c != "clean"][:3]
     if not red_flag:
         return ""
 
-    lines: list[str] = []
     top_cat, top_prob = red_flag[0]
-    if top_prob >= 0.4:
+    if top_prob < 0.45:
+        return ""
+
+    signals_agree = signal_leader is not None and signal_leader == top_cat and signal_score >= 2.5
+    if not signals_agree and top_prob < 0.65:
+        return ""
+
+    lines: list[str] = []
+    if signals_agree:
         lines.append(
-            f"ML-модель (LightGBM) с уверенностью {top_prob:.0%} "
-            f"считает, что намерение относится к «{top_cat}»."
+            f"ML-модель согласна с эвристикой ({top_prob:.0%}) по «{top_cat}» — "
+            "перепроверь intent user:, но null если цель легитимна."
         )
-    elif top_prob >= 0.2:
-        parts = ", ".join(f"{c} ({p:.0%})" for c, p in red_flag if p >= 0.1)
-        if parts:
-            lines.append(f"ML-модель обнаружила подозрительные сигналы: {parts}. Проверь внимательнее.")
+    else:
+        lines.append(
+            f"ML-модель с высокой уверенностью ({top_prob:.0%}) указывает на «{top_cat}» — "
+            "подтверди намерение, не полагайся только на ML."
+        )
 
     clean_prob = probs.get("clean", 0.0)
-    if clean_prob < 0.4:
-        lines.append("ML-модель оценивает вероятность clean как низкую — проверь наличие запрещённого намерения.")
+    if clean_prob >= 0.35 and not signals_agree:
+        return ""
 
     if not lines:
         return ""
 
-    return "АНАЛИЗ ML-МОДЕЛИ (подтверди или отвергни):\n" + "\n".join(lines)
+    return "АНАЛИЗ ML-МОДЕЛИ (гипотеза, не финальное решение):\n" + "\n".join(lines)
