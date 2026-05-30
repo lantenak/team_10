@@ -11,7 +11,7 @@ from app.session_classifier import (
     parse_detection_response,
 )
 
-OPENROUTER_MODEL = os.getenv("OPENROUTER_MODEL", "anthropic/claude-opus-4.8")
+OPENROUTER_MODEL = os.getenv("OPENROUTER_MODEL", "google/gemini-2.5-flash")
 LLM_TIMEOUT_SEC = float(os.getenv("LLM_TIMEOUT_SEC", "60"))
 LLM_MAX_TOKENS = int(os.getenv("LLM_MAX_TOKENS", "1024"))
 
@@ -67,6 +67,8 @@ class LLMClient:
             response.raise_for_status()
             return str(response.json()["choices"][0]["message"]["content"])
         except Exception:
+            import logging
+            logging.getLogger("app.models").exception("LLM request failed")
             return None
 
     def request_completion(
