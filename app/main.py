@@ -2,11 +2,15 @@ import collections.abc
 import contextlib
 import logging
 import os
+from pathlib import Path
 
+from dotenv import load_dotenv
 from fastapi import FastAPI
 
 from app.models import load_llm
 from app.routers import check_router, health_router
+
+load_dotenv(Path(__file__).resolve().parent.parent / ".env")
 
 app_logger = logging.getLogger("uvicorn.error")
 
