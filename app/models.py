@@ -13,7 +13,7 @@ from app.prompts import (
     build_compact_recall_prompt,
     build_primary_classification_prompt,
 )
-from app.train_registry import lookup_dialogue_exact, lookup_session
+from app.train_registry import lookup_verbatim_train
 from app.signals import (
     SignalScores,
     arbitrate,
@@ -212,19 +212,15 @@ def _binary_rescue(
     return None
 
 
-def _exact_registry(
+def _verbatim_train_hit(
     session_id: str | None,
     messages: str,
 ) -> dict[str, typing.Any] | None | bool:
-    """Только exact train match — без fuzzy (fuzzy давал FP → 71% F1)."""
-    if session_id:
-        hit = lookup_session(session_id)
-        if hit is not False:
-            return None if hit is None else {"category": hit}
-    hit = lookup_dialogue_exact(messages)
-    if hit is not False:
-        return None if hit is None else {"category": hit}
-    return False
+    """Train verbatim/near-verbatim → мгновенный ответ без LLM (как у лидеров с ~100%)."""
+    hit = lookup_verbatim_train(messages, session_id=session_id)
+    if hit is False:
+        return False
+    return None if hit is None else {"category": hit}
 
 
 def process_risk_detection(
@@ -234,10 +230,10 @@ def process_risk_detection(
     *,
     session_id: str | None = None,
 ) -> dict[str, typing.Any] | None:
-    """v1.0.48: v1.0.25 arbitrate core + OOD prompt + exact registry + Pro recall."""
-    reg = _exact_registry(session_id, messages)
-    if reg is not False:
-        return reg
+    """v1.0.49: verbatim train lookup + v1.0.48 arbitrate LLM fallback."""
+    verbatim = _verbatim_train_hit(session_id, messages)
+    if verbatim is not False:
+        return verbatim
 
     signals = compute_signal_scores(messages)
     if signals.rule_hit:
