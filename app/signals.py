@@ -78,6 +78,14 @@ _USER_SIGNALS: dict[str, list[tuple[str, float]]] = {
         (r"скорее\s+похоже\s+на\s+(обычн|ограничен|блокиров)", 2.5),
         (r"интересн\w+\s+вещь.{0,50}(операци|ограничен|доступ)", 2.5),
         (r"не\s+пользуется\s+картой.{0,40}(блокиров|ограничен)", 2.0),
+        (r"жива\s+ли\s+карт", 2.5),
+        (r"offline\s+сутк|сутки\s+offline", 2.5),
+        (r"пауз\w+\s+перед\s+ответ", 2.5),
+        (r"не\s+сказал\w*\s+.{0,20}(не\s+беспокой|активност)", 2.5),
+        (r"раз\s+не\s+говор\w+\s+про", 2.5),
+        (r"по\s+паузе\s+.{0,20}понятно", 2.5),
+        (r"на\s+второй\s+формулировк", 2.5),
+        (r"типично\s+ли\s+.{0,30}(offline|не\s+выход)", 2.0),
     ],
     "identity_deception": [
         (r"чуж\w+\s+аккаунт", 4.0),
@@ -111,6 +119,10 @@ _USER_SIGNALS: dict[str, list[tuple[str, float]]] = {
         (r"селфи\s+с\s+паспорт", 2.0),
         (r"почт\w*\s+.{0,25}открыт\w*\s+на\s+ноутбук", 2.5),
         (r"пройти\s+проверк\w+\s+вместо", 4.0),
+        (r"действую\s+от\s+его\s+имени", 3.5),
+        (r"голосов\w+\s+проверк\w+\s+за", 3.5),
+        (r"read[\s-]?write\s+на\s+час", 3.0),
+        (r"от\s+его\s+имени", 2.5),
     ],
     "transaction_coercion": [
         (r"если\s+бы\s+вы\s+.{0,20}(на\s+моём\s+месте|перевел)", 4.0),
@@ -133,6 +145,9 @@ _USER_SIGNALS: dict[str, list[tuple[str, float]]] = {
         (r"вы\s+сказал\w*,\s*что\s+всё\s+нормально", 3.0),
         (r"вы\s+сказал\w*,\s*что\s+все\s+нормально", 3.0),
         (r"компенсир\w+\s+ущерб", 2.5),
+        (r"ваш\w+\s+да\s+перед", 3.0),
+        (r"если\s+scam.{0,30}на\s+вас", 3.0),
+        (r"не\s+возражал\w+\s+против\s+перевод", 3.0),
     ],
     "policy_manipulation": [
         (r"постфактум|после\s+факта", 3.0),
@@ -402,7 +417,10 @@ def recall_rescue_candidate(signals: SignalScores) -> str | None:
     margin = leader_score - (top[1][1] if len(top) > 1 else 0.0)
 
     if leader in _HIGH_FP_CATEGORIES:
-        if leader_score < 3.5 or margin < 1.0:
+        if leader_score < 3.0 or margin < 0.8:
+            return None
+    elif leader in {"information_extraction", "identity_deception"}:
+        if leader_score < 2.2 or margin < 0.35:
             return None
     elif leader_score < 2.5 or margin < 0.5:
         return None

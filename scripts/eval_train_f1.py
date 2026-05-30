@@ -57,9 +57,13 @@ def main() -> None:
         print("OPENROUTER_API_KEY не задан. Скопируйте .env.example → .env и укажите ключ.")
         sys.exit(1)
 
-    from app.boosting import load_boosting_model
+    try:
+        from app.boosting import load_boosting_model
 
-    boosting_model = load_boosting_model()
+        boosting_model = load_boosting_model()
+    except Exception as exc:
+        print(f"Boosting unavailable ({exc}), running LLM-only eval.")
+        boosting_model = None
 
     y_true: list[str] = []
     y_pred: list[str] = []
