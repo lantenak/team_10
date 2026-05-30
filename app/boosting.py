@@ -75,11 +75,11 @@ def format_boosting_hint(
         return ""
 
     top_cat, top_prob = red_flag[0]
-    if top_prob < 0.45:
+    if top_prob < 0.35:
         return ""
 
-    signals_agree = signal_leader is not None and signal_leader == top_cat and signal_score >= 2.5
-    if not signals_agree and top_prob < 0.65:
+    signals_agree = signal_leader is not None and signal_leader == top_cat and signal_score >= 2.0
+    if not signals_agree and top_prob < 0.55:
         return ""
 
     lines: list[str] = []

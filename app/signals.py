@@ -367,21 +367,68 @@ def _suppress_false_positive(category: str | None, signals: SignalScores) -> str
     leader_score = top[0][1] if top else 0.0
     leader = top[0][0] if top else None
 
-    if category == "transaction_coercion" and signals.clean_boost >= 3.0:
+    if category == "transaction_coercion" and signals.clean_boost >= 3.5:
         return None
-    if category == "transaction_coercion" and leader == category and leader_score < 3.5:
+    if category == "transaction_coercion" and leader == category and leader_score < 3.0:
         return None
-    if category == "policy_manipulation" and signals.clean_boost >= 2.5 and leader_score < 4.0:
+    if category == "policy_manipulation" and signals.clean_boost >= 3.0 and leader_score < 4.0:
         return None
-    if category == "scope_violation" and signals.clean_boost >= 3.0:
+    if category == "scope_violation" and signals.clean_boost >= 3.5:
         return None
-    if category == "information_extraction" and signals.clean_boost >= 3.0:
+    if category == "information_extraction" and signals.clean_boost >= 3.5 and leader_score < 3.5:
         return None
-    if category == "identity_deception" and signals.clean_boost >= 3.0 and leader_score < 4.0:
+    if category == "identity_deception" and signals.clean_boost >= 3.5 and leader_score < 4.0:
         return None
-    if category == "adversarial_attack" and signals.clean_boost >= 3.0:
+    if category == "adversarial_attack" and signals.clean_boost >= 3.5:
         return None
     return category
+
+
+_HIGH_FP_CATEGORIES = frozenset({"transaction_coercion", "policy_manipulation"})
+
+
+def recall_rescue_candidate(signals: SignalScores) -> str | None:
+    """Последний рубеж recall: сильные regex без LLM (только при низком clean_boost)."""
+    if signals.rule_hit:
+        return signals.rule_hit
+    if signals.clean_boost >= 2.5:
+        return None
+
+    top = signals.top_two()
+    if not top:
+        return None
+
+    leader, leader_score = top[0]
+    margin = leader_score - (top[1][1] if len(top) > 1 else 0.0)
+
+    if leader in _HIGH_FP_CATEGORIES:
+        if leader_score < 4.0 or margin < 1.5:
+            return None
+    elif leader_score < 2.8 or margin < 0.8:
+        return None
+
+    return _suppress_false_positive(leader, signals)
+
+
+def signal_recheck_warranted(signals: SignalScores) -> tuple[str, float] | None:
+    """Нужен второй LLM-вызов для recall (сигналы есть, clean-контекст слабый)."""
+    if signals.rule_hit or signals.clean_boost >= 2.5:
+        return None
+
+    top = signals.top_two()
+    if not top:
+        return None
+
+    leader, leader_score = top[0]
+    margin = leader_score - (top[1][1] if len(top) > 1 else 0.0)
+
+    if leader in _HIGH_FP_CATEGORIES:
+        if leader_score < 3.5 or margin < 1.2:
+            return None
+    elif leader_score < 2.8 or margin < 0.8:
+        return None
+
+    return leader, leader_score
 
 
 def arbitrate(
@@ -398,19 +445,29 @@ def arbitrate(
     if heuristic is None:
         return _suppress_false_positive(llm, signals)
     if llm is None:
-        if signals.clean_boost >= 3.0:
+        if signals.clean_boost >= 3.5:
             return None
         top = signals.top_two()
         if top:
             leader, leader_score = top[0]
             margin = leader_score - (top[1][1] if len(top) > 1 else 0.0)
-            if leader_score >= 3.0 and margin >= 1.5 and leader in {
+            if leader in _HIGH_FP_CATEGORIES:
+                if leader_score >= 3.5 and margin >= 1.2:
+                    return _suppress_false_positive(leader, signals)
+            elif leader_score >= 2.5 and margin >= 0.8 and leader in {
                 "identity_deception",
                 "information_extraction",
                 "scope_violation",
                 "adversarial_attack",
             }:
-                return leader
+                return _suppress_false_positive(leader, signals)
+            elif leader_score >= 3.0 and margin >= 1.5 and leader in {
+                "identity_deception",
+                "information_extraction",
+                "scope_violation",
+                "adversarial_attack",
+            }:
+                return _suppress_false_positive(leader, signals)
         candidate = heuristic if should_trust_heuristics(signals) else None
         return _suppress_false_positive(candidate, signals)
     if heuristic == llm:
