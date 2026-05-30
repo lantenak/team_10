@@ -14,8 +14,8 @@ def test_system_prompt_uses_trajectory_calibration() -> None:
     assert "score >= 0.36" in system
     assert "БИБЛИОТЕКА КАЛИБРОВКИ" in system
     assert "findings" in system
-    assert "калибровка 100" in system
-    assert calibration_sample_count() == 100
+    assert "калибровка 72" in system
+    assert calibration_sample_count() == 72
 
 
 def test_user_prompt_contains_dialogue_only() -> None:
